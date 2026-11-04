@@ -24,6 +24,18 @@ Commands:
   version. `--offline` is a hidden no-op kept for v0.1.3 compatibility.
   `VERSION` filters: `24`, `22.9`, `v24.21.0`, `default`/`current`, `node`, or
   an nvm-sh alias like `lts/*`.
+  `-u` also checks Node releases (`src/node.rs`): one update per release line
+  (major; `0.minor` before 1.0), only on the newest installed version of the
+  line (`↑ v24.22.2`, `(security)` if a release in between has security
+  fixes). Older installed patches of a line are "superseded": no marker, or a
+  bare dim `↑` when the newer one is filtered out of the view. The summary
+  prints `nvm install X --reinstall-packages-from=Y` (nvm-windows:
+  `nvm install X` + `nvmtree diff Y X`), `nvm uninstall` for superseded
+  versions (never the default/current one; a `# has N packages ...` comment
+  when the newer one lacks some), and LTS / Current lines newer than any
+  installed (`nvm install --lts` / `node`; nvm-windows `lts` / `latest`;
+  hidden with a VERSION filter). Planned over all installed versions, even
+  when filtered.
 - `nvmtree diff FROM TO [--exact] [--command-only]`: packages only in FROM / only in
   TO / at different versions, plus the command to install FROM's missing packages
   into TO (`nvm exec <v> npm i -g ...`; two lines on nvm-windows). A spec matching
@@ -48,15 +60,17 @@ Commands:
   stay on stderr (stdout empty). Offline unless `-u`. Dedicated `Serialize`
   structs are the public format, with `schema_version` (`json::SCHEMA_VERSION`,
   now 1): bump it on breaking changes (renamed/removed fields, changed
-  meaning); new fields are fine. `--json` conflicts with `diff --command-only`;
+  meaning); new fields are fine. With `-u`, versions get `node_update`
+  (`{version, security}`) / `superseded_by`, the document `node_releases`
+  (`latest`, `latest_lts`, `lts_codename`) and `node_releases_unreachable`. `--json` conflicts with `diff --command-only`;
   `which` with no match prints the document (with `suggestions`) and exits 1.
 
 ## Design principles
 
 - Plain, non-interactive CLI: print and exit.
 - Read-only: never installs, deletes or changes anything; it prints commands
-  (install, update, clean) for the user to run. The only file it writes is the
-  registry cache, and only with `-u`. `--json` prints to stdout, never to a file.
+  (install, update, clean) for the user to run. The only files it writes are the
+  registry and Node release caches, and only with `-u`. `--json` prints to stdout, never to a file.
 - Offline by default; network only with `-u`/`--refresh`.
 - Mark the nvm-sh `default` alias, or the active version on nvm-windows (`current`).
 - Hide Node-bundled packages (`npm`, `corepack`) by default; `--all` shows them.
@@ -70,6 +84,13 @@ Commands:
   `%LOCALAPPDATA%\nvmtree\cache`); 404s are cached too; on network failure stale
   cache entries are used. Registry = `$npm_config_registry` or npmjs. Never
   block or fail the listing because of the registry.
+- Node releases (only with `-u`): one GET of `<mirror>/index.json`
+  (`$NVM_NODEJS_ORG_MIRROR` on nvm-sh, `node_mirror:` in nvm-windows'
+  `settings.txt`, default `https://nodejs.org/dist`; 10 s timeout), in
+  parallel with the registry checks. Sends nothing about the install. Stable
+  releases only (prereleases dropped), versions rebuilt from their numeric
+  parts before going into commands. Cached 6 h in `node-releases.json` next
+  to `registry.json` (keyed by URL), stale cache on failure.
 - Candidate next features: Homebrew tap, shell completions, `npx --json`, disk
   usage per Node version, CONTRIBUTING.md + PR/issue templates.
 
@@ -199,6 +220,9 @@ registry); `tempfile` for tests. `Cargo.lock` is committed (binary crate).
 - `src/npx.rs` — npx cache: `cache_dir`, `packages` (reads `_npx/<hash>/package.json`
   `_npx.packages` specs, legacy `dependencies`; names that would escape the
   folder are ignored), `matching`, `dir_size` (doesn't follow symlinks)
+- `src/node.rs` — Node release index: `releases` (fetch + cache, fetch fn
+  as a parameter like the registry), `parse_index`, `plan` (per-line
+  `Status::Update` / `Superseded`, `new_lines`); `output::node_summary` renders it
 - `src/registry.rs` — npm registry lookups + cache; `lookup` takes the fetch
   function as a parameter so tests use a fake registry (no network in tests)
 - `src/output.rs` — renderers returning styled `String`s: `tree`, `table`,

@@ -36,7 +36,7 @@ nvmtree                  # every version and its global packages, as a tree
 nvmtree 24               # only matching versions (22.9, v24.21.0, default, node, lts/*)
 nvmtree --table          # package × version matrix
 nvmtree --all            # include npm and corepack
-nvmtree -u               # also check npm for updates and deprecations
+nvmtree -u               # also check npm for updates and deprecations, and nodejs.org for Node updates
 nvmtree --refresh        # same, ignoring cached registry answers
 
 nvmtree diff 24 26       # what 24 has that 26 doesn't + the command to install it
@@ -52,7 +52,9 @@ nvmtree --json           # one JSON document instead of text (list, diff, which)
 nvmtree diff 24 26 --json | jq -r .install_command
 ```
 
-Markers: `↑ 4.9.3` newer on npm (with `-u`) · `deprecated` (with `-u`) · `(linked)` from `npm link` · `→ tsc` commands it adds · `(default)` / `(current)` the version nvm uses.
+Markers: `↑ 4.9.3` newer on npm (with `-u`) · `↑ v24.22.2` newer Node release of that line (with `-u`, only on the newest installed version of each line) · `deprecated` (with `-u`) · `(linked)` from `npm link` · `→ tsc` commands it adds · `(default)` / `(current)` the version nvm uses.
+
+With `-u`, Node updates are counted per release line: with v24.22.1 and v24.22.0 installed, only v24.22.1 gets `↑ v24.22.2`. The summary prints the commands to update (`nvm install 24.22.2 --reinstall-packages-from=24.22.1` copies your global packages over), to remove older patches of the same line (with a warning if they have packages the newer one doesn't), and to install a newer LTS or Current line.
 
 `npx <pkg>` doesn't install globally: it caches the package in npm's cache (`~/.npm/_npx`), shared by all Node versions and kept until you clean it. `nvmtree` ends with a one-line summary of that cache, `nvmtree npx` shows the details, and `nvmtree which` tells you when something is only cached by npx.
 
@@ -65,6 +67,7 @@ How it works
 
 - reads nvm's folders directly (`$NVM_DIR` or `~/.nvm`; `%NVM_HOME%` or `%APPDATA%\nvm`), and npm's npx cache (`$npm_config_cache/_npx`, default `~/.npm/_npx`; Windows `%LOCALAPPDATA%\npm-cache\_npx`)
 - never touches the network unless you pass `-u`; then it asks the npm registry (or `$npm_config_registry`) about each package, in parallel, cached for 6 hours. That sends your global package names and versions to the registry
+- with `-u` it also downloads Node's release list (`https://nodejs.org/dist/index.json`, or `$NVM_NODEJS_ORG_MIRROR` / nvm-windows' `node_mirror`), cached for 6 hours. That request sends nothing about what you have installed
 - fnm, Volta, n, asdf and mise are not supported
 
 Uninstall
