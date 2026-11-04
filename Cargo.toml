@@ -1,6 +1,6 @@
 [package]
 name = "nvmtree"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "List your nvm Node.js versions and their global npm packages, compare them, and see what npx cached"
