@@ -184,6 +184,7 @@ mod tests {
             version: version(name),
             label: None,
             packages,
+            node: None,
         }
     }
 

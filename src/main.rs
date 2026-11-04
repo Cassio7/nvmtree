@@ -1,5 +1,6 @@
 mod compare;
 mod json;
+mod node;
 mod npx;
 mod nvm;
 mod output;
@@ -136,21 +137,47 @@ fn main() -> Result<()> {
 }
 
 fn list(install: &nvm::Install, args: &ListArgs, all: bool, json: bool) -> Result<()> {
-    let mut entries = install.load_entries(all)?;
-    if entries.is_empty() && !json {
+    let installed = install.load_entries(all)?;
+    if installed.is_empty() && !json {
         anstream::println!("No Node versions installed in {}", install.root.display());
         return Ok(());
     }
-    if let Some(spec) = &args.node_version {
-        let selected = select(install, &entries, spec)?;
-        entries = selected.into_iter().map(|i| entries[i].clone()).collect();
-    }
+    let mut entries = match &args.node_version {
+        Some(spec) => select(install, &installed, spec)?
+            .into_iter()
+            .map(|i| installed[i].clone())
+            .collect(),
+        None => installed.clone(),
+    };
 
-    let incomplete = args.check_updates()
-        && check_registry(
-            entries.iter_mut().flat_map(|e| &mut e.packages),
-            args.refresh,
-        );
+    // The release index and the registry are independent: ask both at once.
+    let (incomplete, node_plan) = if args.check_updates() {
+        std::thread::scope(|s| {
+            let releases = s.spawn(|| {
+                node::releases(
+                    &node::index_url(install),
+                    node::default_cache_path().as_deref(),
+                    registry::CACHE_TTL,
+                    args.refresh,
+                    node::http_fetch,
+                )
+            });
+            let incomplete = check_registry(
+                entries.iter_mut().flat_map(|e| &mut e.packages),
+                args.refresh,
+            );
+            let releases = releases.join().ok().flatten();
+            // Planned over every installed version, so a filter can't hide
+            // that a newer patch of the same line is installed.
+            let plan = node::plan(&installed, releases.as_deref());
+            for entry in &mut entries {
+                entry.node = plan.status.get(&entry.version.name).cloned();
+            }
+            (incomplete, Some((plan, releases.is_some())))
+        })
+    } else {
+        (false, None)
+    };
 
     if json {
         return json::print(&json::list(
@@ -158,6 +185,7 @@ fn list(install: &nvm::Install, args: &ListArgs, all: bool, json: bool) -> Resul
             &entries,
             args.check_updates(),
             incomplete,
+            node_plan.as_ref().map(|(plan, reached)| (plan, *reached)),
         ));
     }
     let rendered = if args.table {
@@ -166,6 +194,17 @@ fn list(install: &nvm::Install, args: &ListArgs, all: bool, json: bool) -> Resul
         output::tree(&entries)
     };
     anstream::print!("{rendered}");
+    if let Some((plan, reached)) = &node_plan {
+        // New lines are about the whole install, not a filtered view.
+        let new_lines = match args.node_version {
+            Some(_) => &[][..],
+            None => &plan.new_lines[..],
+        };
+        anstream::print!(
+            "{}",
+            output::node_summary(&entries, new_lines, &install.flavor, !reached)
+        );
+    }
     anstream::print!(
         "{}",
         output::registry_summary(&entries, &install.flavor, incomplete)

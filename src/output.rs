@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use anstyle::{AnsiColor, Style};
 
 use crate::compare::{Diff, Found, is_installable, npm_install_command};
+use crate::node::{Release, Status};
 use crate::npx::NpxPackage;
 use crate::nvm::{Entry, Flavor, GlobalPackage};
 use crate::sanitize::printable;
@@ -94,6 +95,16 @@ pub fn tree(entries: &[Entry]) -> String {
             out.push('\n');
         }
         out += &version_heading(entry);
+        match node_marker(entry, entries) {
+            NodeMarker::Update { to, security } => {
+                out += &format!("  {}", styled(WARN, &format!("↑ {to}")));
+                if security {
+                    out += &format!(" {}", styled(MISSING, "(security)"));
+                }
+            }
+            NodeMarker::Hidden => out += &format!("  {}", styled(DIM, "↑")),
+            NodeMarker::None => {}
+        }
         out.push('\n');
 
         let packages = &entry.packages;
@@ -139,12 +150,19 @@ pub fn table(entries: &[Entry]) -> String {
         return styled(DIM, "(no global packages)") + "\n";
     }
 
-    // Plain-text header labels; the marked version gets a `*`.
+    // Plain-text header labels; the marked version gets a `*`, a newer Node
+    // release (or a newer installed patch that isn't shown) a `↑`.
     let headers: Vec<String> = entries
         .iter()
-        .map(|e| match e.label {
-            Some(_) => format!("{}*", e.version.name),
-            None => e.version.name.clone(),
+        .map(|e| {
+            let mut header = e.version.name.clone();
+            if e.label.is_some() {
+                header.push('*');
+            }
+            if node_marker(e, entries) != NodeMarker::None {
+                header.push_str(" ↑");
+            }
+            header
         })
         .collect();
 
@@ -211,7 +229,11 @@ pub fn table(entries: &[Entry]) -> String {
     if let Some(label) = entries.iter().find_map(|e| e.label) {
         legend.push(format!("* {label}"));
     }
-    if packages().any(|p| p.registry.update.is_some()) {
+    if packages().any(|p| p.registry.update.is_some())
+        || entries
+            .iter()
+            .any(|e| node_marker(e, entries) != NodeMarker::None)
+    {
         legend.push("↑ update available".to_string());
     }
     if packages().any(|p| p.registry.deprecated.is_some()) {
@@ -220,6 +242,176 @@ pub fn table(entries: &[Entry]) -> String {
     if !legend.is_empty() {
         out += &styled(DIM, &legend.join("   "));
         out.push('\n');
+    }
+    out
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NodeMarker {
+    None,
+    /// A newer release of this line exists.
+    Update {
+        to: String,
+        security: bool,
+    },
+    /// A newer patch of this line is installed but filtered out of the view:
+    /// a bare `↑` (when it's shown, its own marker says it all).
+    Hidden,
+}
+
+fn node_marker(entry: &Entry, shown: &[Entry]) -> NodeMarker {
+    match &entry.node {
+        Some(Status::Update { to, security }) => NodeMarker::Update {
+            to: to.clone(),
+            security: *security,
+        },
+        Some(Status::Superseded { by, .. }) if !shown.iter().any(|e| e.version.name == *by) => {
+            NodeMarker::Hidden
+        }
+        _ => NodeMarker::None,
+    }
+}
+
+/// `24.22.1` from a version's numeric parts (safe in a shell command).
+fn plain_version(parts: (u64, u64, u64)) -> String {
+    format!("{}.{}.{}", parts.0, parts.1, parts.2)
+}
+
+/// Node updates (one per release line), older patches that a newer
+/// installed one supersedes, and release lines newer than any installed.
+/// `unreachable` when the release list couldn't be loaded.
+pub fn node_summary(
+    entries: &[Entry],
+    new_lines: &[Release],
+    flavor: &Flavor,
+    unreachable: bool,
+) -> String {
+    let mut out = String::new();
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let command = |line: &str| format!("  {}\n", styled(MARK, line));
+    let comment = |text: &str| format!("  {}", styled(DIM, &format!("# {text}")));
+
+    let updates: Vec<(&Entry, &str, bool)> = entries
+        .iter()
+        .filter_map(|e| match &e.node {
+            Some(Status::Update { to, security }) => Some((e, to.as_str(), *security)),
+            _ => None,
+        })
+        .collect();
+    if !updates.is_empty() {
+        let how = match flavor {
+            Flavor::NvmSh => "installs it and copies the global packages",
+            Flavor::NvmWindows { .. } => "then copy the global packages with nvmtree diff",
+        };
+        let _ = writeln!(
+            out,
+            "\n{} available. To update ({how}):",
+            styled(WARN, &format!("↑ {}", plural(updates.len(), "Node update")))
+        );
+        for (entry, to, security) in updates {
+            let from = plain_version(entry.version.parts);
+            let Some(to) = crate::nvm::parse_version(to).map(plain_version) else {
+                continue;
+            };
+            let note = if security {
+                format!("  {}", styled(MISSING, "# security release"))
+            } else {
+                String::new()
+            };
+            match flavor {
+                Flavor::NvmSh => {
+                    let line = format!("nvm install {to} --reinstall-packages-from={from}");
+                    let _ = writeln!(out, "  {}{note}", styled(MARK, &line));
+                }
+                Flavor::NvmWindows { .. } => {
+                    let _ = writeln!(
+                        out,
+                        "  {}{note}",
+                        styled(MARK, &format!("nvm install {to}"))
+                    );
+                    out += &command(&format!("nvmtree diff {from} {to}"));
+                }
+            }
+        }
+    }
+
+    // The version nvm uses isn't suggested for removal.
+    let superseded: Vec<(&Entry, &str, usize)> = entries
+        .iter()
+        .filter(|e| e.label.is_none())
+        .filter_map(|e| match &e.node {
+            Some(Status::Superseded { by, missing }) => Some((e, by.as_str(), *missing)),
+            _ => None,
+        })
+        .collect();
+    if !superseded.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n{} of a line with a newer patch installed. To remove:",
+            styled(
+                DIM,
+                &if superseded.len() == 1 {
+                    "1 older version".to_string()
+                } else {
+                    format!("{} older versions", superseded.len())
+                }
+            )
+        );
+        for (entry, by, missing) in superseded {
+            let old = plain_version(entry.version.parts);
+            let _ = write!(out, "  {}", styled(MARK, &format!("nvm uninstall {old}")));
+            if missing > 0 {
+                let by = by.trim_start_matches('v');
+                out += &comment(&format!(
+                    "has {} v{by} doesn't: nvmtree diff {old} {by}",
+                    plural(missing, "package")
+                ));
+            }
+            out.push('\n');
+        }
+    }
+
+    if !new_lines.is_empty() {
+        let names: Vec<String> = new_lines
+            .iter()
+            .map(|r| match &r.lts {
+                Some(codename) => format!("{} (LTS {codename})", r.version),
+                None => format!("{} (Current)", r.version),
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "\n{} {}, not installed. To install:",
+            styled(
+                WARN,
+                if new_lines.len() == 1 {
+                    "New Node line:"
+                } else {
+                    "New Node lines:"
+                }
+            ),
+            styled(Style::new(), &names.join(", "))
+        );
+        for release in new_lines {
+            let line = match (flavor, release.lts.is_some()) {
+                (Flavor::NvmSh, true) => "nvm install --lts",
+                (Flavor::NvmSh, false) => "nvm install node",
+                (Flavor::NvmWindows { .. }, true) => "nvm install lts",
+                (Flavor::NvmWindows { .. }, false) => "nvm install latest",
+            };
+            out += &command(line);
+        }
+    }
+
+    if unreachable {
+        let _ = writeln!(
+            out,
+            "\n{}",
+            styled(
+                DIM,
+                "Couldn't download the Node release list, Node updates were skipped."
+            )
+        );
     }
     out
 }
@@ -682,6 +874,7 @@ mod tests {
             },
             label,
             packages,
+            node: None,
         }
     }
 
@@ -766,6 +959,117 @@ v24.2.0 (default)
             out.ends_with("* default   ↑ update available   ! deprecated\n"),
             "{out}"
         );
+    }
+
+    /// Two 24.x patches (one update, on the newest), an up-to-date 22.x and
+    /// the planned statuses, as `node::plan` would give them.
+    fn sample_with_node_updates() -> Vec<Entry> {
+        let mut entries = vec![
+            entry(
+                "v24.22.1",
+                None,
+                vec![pkg("typescript", Some("5.9.2"), &[], false)],
+            ),
+            entry(
+                "v24.22.0",
+                None,
+                vec![
+                    pkg("typescript", Some("5.9.2"), &[], false),
+                    pkg("pnpm", Some("10.0.0"), &[], false),
+                ],
+            ),
+            entry("v24.21.0", Some("default"), vec![]),
+            entry("v22.21.1", None, vec![]),
+        ];
+        entries[0].node = Some(Status::Update {
+            to: "v24.22.2".into(),
+            security: true,
+        });
+        entries[1].node = Some(Status::Superseded {
+            by: "v24.22.1".into(),
+            missing: 1,
+        });
+        entries[2].node = Some(Status::Superseded {
+            by: "v24.22.1".into(),
+            missing: 0,
+        });
+        entries
+    }
+
+    #[test]
+    fn renders_node_updates_once_per_line() {
+        let entries = sample_with_node_updates();
+        let out = plain(&tree(&entries));
+        assert!(
+            out.starts_with("v24.22.1  ↑ v24.22.2 (security)\n"),
+            "{out}"
+        );
+        // Older patches don't repeat the update while the newest is shown.
+        assert!(out.contains("\nv24.22.0\n"), "{out}");
+        assert!(out.contains("\nv24.21.0 (default)\n"), "{out}");
+        // Filtered to an old patch: just a bare arrow.
+        assert_eq!(
+            plain(&tree(&entries[1..2])).lines().next(),
+            Some("v24.22.0  ↑")
+        );
+
+        let out = plain(&table(&entries));
+        assert!(
+            out.starts_with("package     v24.22.1 ↑  v24.22.0  v24.21.0*  v22.21.1"),
+            "{out}"
+        );
+        assert!(out.contains("↑ update available"), "{out}");
+    }
+
+    #[test]
+    fn renders_node_summary() {
+        let entries = sample_with_node_updates();
+        let lts = Release {
+            version: "v26.13.0".into(),
+            lts: Some("Lithium".into()),
+            security: false,
+        };
+        let current = Release {
+            version: "v27.1.0".into(),
+            lts: None,
+            security: false,
+        };
+        let new_lines = [current, lts];
+        assert_eq!(
+            plain(&node_summary(&entries, &new_lines, &Flavor::NvmSh, false)),
+            "
+↑ 1 Node update available. To update (installs it and copies the global packages):
+  nvm install 24.22.2 --reinstall-packages-from=24.22.1  # security release
+
+1 older version of a line with a newer patch installed. To remove:
+  nvm uninstall 24.22.0  # has 1 package v24.22.1 doesn't: nvmtree diff 24.22.0 24.22.1
+
+New Node lines: v27.1.0 (Current), v26.13.0 (LTS Lithium), not installed. To install:
+  nvm install node
+  nvm install --lts
+"
+        );
+        let windows = Flavor::NvmWindows { symlink: None };
+        let out = plain(&node_summary(
+            &entries[..1],
+            &new_lines[1..],
+            &windows,
+            true,
+        ));
+        assert_eq!(
+            out,
+            "
+↑ 1 Node update available. To update (then copy the global packages with nvmtree diff):
+  nvm install 24.22.2  # security release
+  nvmtree diff 24.22.1 24.22.2
+
+New Node line: v26.13.0 (LTS Lithium), not installed. To install:
+  nvm install lts
+
+Couldn't download the Node release list, Node updates were skipped.
+"
+        );
+        assert_eq!(node_summary(&entries[3..], &[], &Flavor::NvmSh, false), "");
     }
 
     #[test]

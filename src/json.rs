@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 
 use crate::compare::{Diff, Found};
+use crate::node::{Plan, Status};
 use crate::npx::NpxPackage;
 use crate::nvm::{Entry, Flavor, GlobalPackage, Install};
 
@@ -84,12 +85,34 @@ impl From<&Install> for Nvm {
     }
 }
 
+/// A newer release of a version's line (only on the newest installed
+/// version of each line).
+#[derive(Serialize)]
+struct NodeUpdate<'a> {
+    version: &'a str,
+    /// A release between the installed one and `version` has security fixes.
+    security: bool,
+}
+
 #[derive(Serialize)]
 struct Version<'a> {
     version: &'a str,
     label: Option<&'static str>,
     path: String,
+    /// With `-u`: newer release of this line, else `null`.
+    node_update: Option<NodeUpdate<'a>>,
+    /// With `-u`: newest installed version of the same line when this one
+    /// is older, else `null`.
+    superseded_by: Option<&'a str>,
     packages: Vec<Package<'a>>,
+}
+
+/// Newest Node releases, from the release index (`-u`).
+#[derive(Serialize)]
+struct NodeReleases<'a> {
+    latest: Option<&'a str>,
+    latest_lts: Option<&'a str>,
+    lts_codename: Option<&'a str>,
 }
 
 /// `nvmtree --json`: every (selected) Node version and its global packages.
@@ -102,26 +125,54 @@ pub struct List<'a> {
     updates_checked: bool,
     /// The registry couldn't be reached for some packages.
     registry_incomplete: bool,
+    /// With `-u`: newest Node releases; `null` when not checked or the
+    /// release list couldn't be loaded.
+    node_releases: Option<NodeReleases<'a>>,
+    /// The Node release list couldn't be loaded (`node_update` is `null`).
+    node_releases_unreachable: bool,
     versions: Vec<Version<'a>>,
 }
 
+/// `node`: the update plan and whether the release list was loaded, when
+/// checked (`-u`).
 pub fn list<'a>(
     install: &Install,
     entries: &'a [Entry],
     updates_checked: bool,
     registry_incomplete: bool,
+    node: Option<(&'a Plan, bool)>,
 ) -> List<'a> {
+    let bare = |v: &'a str| v.trim_start_matches('v');
     List {
         schema_version: SCHEMA_VERSION,
         nvm: install.into(),
         updates_checked,
         registry_incomplete,
+        node_releases: node
+            .filter(|(_, reached)| *reached)
+            .map(|(plan, _)| NodeReleases {
+                latest: plan.latest.as_ref().map(|r| bare(&r.version)),
+                latest_lts: plan.latest_lts.as_ref().map(|r| bare(&r.version)),
+                lts_codename: plan.latest_lts.as_ref().and_then(|r| r.lts.as_deref()),
+            }),
+        node_releases_unreachable: node.is_some_and(|(_, reached)| !reached),
         versions: entries
             .iter()
             .map(|e| Version {
                 version: node_version(e),
                 label: e.label,
                 path: path_string(&e.version.path),
+                node_update: match &e.node {
+                    Some(Status::Update { to, security }) => Some(NodeUpdate {
+                        version: bare(to),
+                        security: *security,
+                    }),
+                    _ => None,
+                },
+                superseded_by: match &e.node {
+                    Some(Status::Superseded { by, .. }) => Some(bare(by)),
+                    _ => None,
+                },
                 packages: e.packages.iter().map(Package::from).collect(),
             })
             .collect(),
@@ -316,6 +367,7 @@ mod tests {
             },
             label,
             packages,
+            node: None,
         }
     }
 
@@ -328,7 +380,7 @@ mod tests {
         let install = Install::nvm_sh(PathBuf::from("/nvm"));
         let mut shopify = pkg("@shopify/cli", "4.8.4", &["shopify"], false);
         shopify.registry.update = Some("4.9.3".into());
-        let entries = vec![
+        let mut entries = vec![
             entry(
                 "v26.11.1",
                 None,
@@ -336,18 +388,42 @@ mod tests {
             ),
             entry("v24.21.0", Some("default"), vec![shopify]),
         ];
+        entries[0].node = Some(Status::Update {
+            to: "v26.13.0".into(),
+            security: true,
+        });
+        entries[1].node = Some(Status::Superseded {
+            by: "v24.22.0".into(),
+            missing: 0,
+        });
+        let release = |version: &str, lts: Option<&str>| crate::node::Release {
+            version: version.into(),
+            lts: lts.map(str::to_string),
+            security: false,
+        };
+        let plan = Plan {
+            latest: Some(release("v27.1.0", None)),
+            latest_lts: Some(release("v26.13.0", Some("Lithium"))),
+            ..Plan::default()
+        };
         assert_eq!(
-            to_value(&list(&install, &entries, true, false)),
+            to_value(&list(&install, &entries, true, false, Some((&plan, true)))),
             json!({
                 "schema_version": 1,
                 "nvm": {"kind": "nvm", "root": "/nvm"},
                 "updates_checked": true,
                 "registry_incomplete": false,
+                "node_releases": {
+                    "latest": "27.1.0", "latest_lts": "26.13.0", "lts_codename": "Lithium"
+                },
+                "node_releases_unreachable": false,
                 "versions": [
                     {
                         "version": "26.11.1",
                         "label": null,
                         "path": "/nvm/versions/node/v26.11.1",
+                        "node_update": {"version": "26.13.0", "security": true},
+                        "superseded_by": null,
                         "packages": [{
                             "name": "typescript", "version": "7.0.2", "linked": false,
                             "bins": ["tsc"], "update": null, "deprecated": null
@@ -357,6 +433,8 @@ mod tests {
                         "version": "24.21.0",
                         "label": "default",
                         "path": "/nvm/versions/node/v24.21.0",
+                        "node_update": null,
+                        "superseded_by": "24.22.0",
                         "packages": [{
                             "name": "@shopify/cli", "version": "4.8.4", "linked": false,
                             "bins": ["shopify"], "update": "4.9.3", "deprecated": null
@@ -365,9 +443,18 @@ mod tests {
                 ]
             })
         );
+        // Release list unreachable: no releases, flagged.
+        let doc = to_value(&list(&install, &entries, true, false, Some((&plan, false))));
+        assert_eq!(doc["node_releases"], Value::Null);
+        assert_eq!(doc["node_releases_unreachable"], true);
+        // Not checked: nothing.
+        let doc = to_value(&list(&install, &[], false, false, None));
+        assert_eq!(doc["node_releases"], Value::Null);
+        assert_eq!(doc["node_releases_unreachable"], false);
+
         let windows = Install::nvm_windows(Path::new("/nope"), None);
         assert_eq!(
-            to_value(&list(&windows, &[], false, false))["nvm"]["kind"],
+            to_value(&list(&windows, &[], false, false, None))["nvm"]["kind"],
             "nvm-windows"
         );
     }
@@ -481,7 +568,7 @@ mod tests {
             None,
             vec![pkg("evil\u{1b}]0;x\u{7}", "1.0.0", &[], false)],
         )];
-        let text = serde_json::to_string(&list(&install, &entries, false, false)).unwrap();
+        let text = serde_json::to_string(&list(&install, &entries, false, false, None)).unwrap();
         assert!(
             !text.contains('\u{1b}') && !text.contains('\u{7}'),
             "{text}"

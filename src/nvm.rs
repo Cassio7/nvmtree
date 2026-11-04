@@ -45,6 +45,8 @@ pub struct Entry {
     /// `Some("default")` / `Some("current")` for the version nvm will use.
     pub label: Option<&'static str>,
     pub packages: Vec<GlobalPackage>,
+    /// Node update / superseded info, when checked (`-u`).
+    pub node: Option<crate::node::Status>,
 }
 
 /// Which nvm implementation the installation belongs to.
@@ -64,6 +66,10 @@ pub struct Install {
     /// Directory containing the installed versions' parent (nvm-sh) or the
     /// versions themselves (nvm-windows).
     pub root: PathBuf,
+    /// Where nvm downloads Node from, when not nodejs.org:
+    /// `$NVM_NODEJS_ORG_MIRROR` (nvm-sh), `node_mirror:` in `settings.txt`
+    /// (nvm-windows).
+    pub node_mirror: Option<String>,
 }
 
 impl Install {
@@ -84,7 +90,12 @@ impl Install {
                     .context("neither NVM_DIR nor HOME is set")?
                     .join(".nvm"),
             };
-            Ok(Self::nvm_sh(root))
+            Ok(Self {
+                node_mirror: std::env::var("NVM_NODEJS_ORG_MIRROR")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty()),
+                ..Self::nvm_sh(root)
+            })
         }
     }
 
@@ -92,6 +103,7 @@ impl Install {
         Self {
             flavor: Flavor::NvmSh,
             root,
+            node_mirror: None,
         }
     }
 
@@ -104,14 +116,15 @@ impl Install {
             settings.lines().find_map(|line| {
                 let (k, v) = line.split_once(':')?;
                 let v = v.trim();
-                (k.trim().eq_ignore_ascii_case(key) && !v.is_empty()).then(|| PathBuf::from(v))
+                (k.trim().eq_ignore_ascii_case(key) && !v.is_empty()).then(|| v.to_string())
             })
         };
         Self {
-            root: setting("root").unwrap_or_else(|| home.to_path_buf()),
+            root: setting("root").map_or_else(|| home.to_path_buf(), PathBuf::from),
             flavor: Flavor::NvmWindows {
-                symlink: symlink_env.or_else(|| setting("path")),
+                symlink: symlink_env.or_else(|| setting("path").map(PathBuf::from)),
             },
+            node_mirror: setting("node_mirror"),
         }
     }
 
@@ -252,6 +265,7 @@ impl Install {
                 version,
                 label,
                 packages,
+                node: None,
             });
         }
         Ok(entries)
@@ -619,10 +633,17 @@ mod tests {
         fs::create_dir_all(versions.join("v20.1.0")).unwrap();
         write(
             &home.join("settings.txt"),
-            &format!("root: {}\n", versions.display()),
+            &format!(
+                "root: {}\nnode_mirror: https://npmmirror.com/mirrors/node/\n",
+                versions.display()
+            ),
         );
         let install = Install::nvm_windows(&home, None);
         assert_eq!(names(&install.installed_versions().unwrap()), ["v20.1.0"]);
+        assert_eq!(
+            install.node_mirror.as_deref(),
+            Some("https://npmmirror.com/mirrors/node/")
+        );
     }
 
     #[test]
