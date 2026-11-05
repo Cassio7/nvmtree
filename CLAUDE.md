@@ -91,7 +91,8 @@ Commands:
   Cached 6 h in `registry.json` under the OS cache dir
   (`~/Library/Caches/nvmtree`, `$XDG_CACHE_HOME/nvmtree` or `~/.cache/nvmtree`,
   `%LOCALAPPDATA%\nvmtree\cache`); 404s are cached too; on network failure stale
-  cache entries are used. Registry = `$npm_config_registry` or npmjs. Never
+  cache entries are used; entries older than 30 days (`CACHE_MAX_AGE`) are
+  dropped when the cache is loaded. Registry = `$npm_config_registry` or npmjs. Never
   block or fail the listing because of the registry.
 - Node releases (only with `-u`): one GET of `<mirror>/index.json`
   (`$NVM_NODEJS_ORG_MIRROR` on nvm-sh, `node_mirror:` in nvm-windows'

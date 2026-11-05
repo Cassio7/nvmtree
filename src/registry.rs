@@ -15,6 +15,8 @@ use crate::sanitize::{is_safe_package_name, is_safe_version};
 
 /// How long a registry answer is reused before asking again.
 pub const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Older cache entries are dropped, even as an offline fallback.
+const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// Version lists are much bigger than single manifests (~2 MB for
 /// `@angular/cli`), and only fetched when `latest` needs a newer Node.
@@ -144,6 +146,14 @@ pub fn lookup(
         .filter(|c: &Cache| c.format == CACHE_FORMAT)
         .unwrap_or_default();
     cache.format = CACHE_FORMAT;
+    // Expired answers stay around as a fallback for when the registry can't
+    // be reached, but not forever: queried keys get refreshed, so what ages
+    // out is upgraded versions and uninstalled packages.
+    let cached_keys = cache.entries.len();
+    cache
+        .entries
+        .retain(|_, e| now.saturating_sub(e.fetched_at) < CACHE_MAX_AGE.as_secs());
+    let pruned = cache.entries.len() != cached_keys;
 
     // Names and versions end up in request URLs; skip anything that isn't a
     // plain package name / semver version (they get no info).
@@ -222,7 +232,7 @@ pub fn lookup(
         fetch_all(queue, max_keys, &fetch, &follow_up)
     };
     let mut failed = HashSet::new();
-    let changed = store(&mut cache, fetched, now, &mut failed);
+    let changed = store(&mut cache, fetched, now, &mut failed) || pruned;
 
     if changed && let Some(path) = cache_path {
         save_cache(path, &cache);
@@ -634,6 +644,44 @@ mod tests {
             Some("4.9.3")
         );
         assert!(!result.incomplete);
+    }
+
+    #[test]
+    fn prunes_entries_older_than_max_age() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("registry.json");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let entry = |age: Duration| CacheEntry {
+            manifest: Some(Manifest::default()),
+            fetched_at: now - age.as_secs(),
+        };
+        let day = Duration::from_secs(24 * 60 * 60);
+        let cache = Cache {
+            format: CACHE_FORMAT,
+            entries: HashMap::from([
+                ("yoinks/latest".into(), entry(Duration::ZERO)),
+                ("yoinks/0.3.1".into(), entry(Duration::ZERO)),
+                ("upgraded/1.0.0".into(), entry(CACHE_MAX_AGE + day)),
+                ("kept-as-fallback/1.0.0".into(), entry(CACHE_MAX_AGE - day)),
+            ]),
+        };
+        save_cache(&path, &cache);
+
+        // Everything asked for is fresh: no requests, but the file is rewritten.
+        let packages = pkgs(&[("yoinks", "0.3.1")]);
+        lookup(&packages, Some(&path), CACHE_TTL, false, |key: &str| {
+            panic!("unexpected request for {key}")
+        });
+        let saved: Cache = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let mut keys: Vec<&str> = saved.entries.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["kept-as-fallback/1.0.0", "yoinks/0.3.1", "yoinks/latest"]
+        );
     }
 
     #[test]
