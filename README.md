@@ -52,7 +52,7 @@ nvmtree --json           # one JSON document instead of text (list, diff, which)
 nvmtree diff 24 26 --json | jq -r .install_command
 ```
 
-Markers: `↑ 4.9.3` newer on npm (with `-u`) · `↑ v24.22.2` newer Node release of that line (with `-u`, only on the newest installed version of each line) · `deprecated` (with `-u`) · `(linked)` from `npm link` · `→ tsc` commands it adds · `(default)` / `(current)` the version nvm uses.
+Markers: `↑ 4.9.3` newer on npm (with `-u`; the newest that runs on that Node version) · `(⬆ 22.2.6 needs Node ≥22.22.3)` the latest version, which needs a newer Node · `↑ v24.22.2` newer Node release of that line (with `-u`, only on the newest installed version of each line) · `deprecated` (with `-u`) · `(linked)` from `npm link` · `→ tsc` commands it adds · `(default)` / `(current)` the version nvm uses.
 
 With `-u`, Node updates are counted per release line: with v24.22.1 and v24.22.0 installed, only v24.22.1 gets `↑ v24.22.2`. The summary prints the commands to update (`nvm install 24.22.2 --reinstall-packages-from=24.22.1` copies your global packages over), to remove older patches of the same line (with a warning if they have packages the newer one doesn't), and to install a newer LTS or Current line.
 

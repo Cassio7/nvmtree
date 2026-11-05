@@ -21,7 +21,13 @@ Commands:
   default**; with `-u` (or `--refresh` = `-u` ignoring the cache) it also shows
   `↑ x.y.z` when npm has a newer version and `deprecated` + message (`↑` / `!`
   in the table), ending with a summary + `npm i -g <pkg>@latest` commands per
-  version. `--offline` is a hidden no-op kept for v0.1.3 compatibility.
+  version. Updates respect `engines.node` (`src/engines.rs`, a small npm
+  range matcher; unparseable ranges count as compatible): when `latest`
+  doesn't run on that Node version, the abbreviated version list
+  (`Accept: application/vnd.npm.install-v1+json`, bare `name` cache key) is
+  fetched to find the newest compatible one (`↑ 13.3.11`, command pins
+  `@13.3.11`), and the line ends with `(⬆ 22.2.6 needs Node ≥22.22.3)` in
+  magenta (the Node-update color; package updates are yellow). `--offline` is a hidden no-op kept for v0.1.3 compatibility.
   `VERSION` filters: `24`, `22.9`, `v24.21.0`, `default`/`current`, `node`, or
   an nvm-sh alias like `lts/*`.
   `-u` also checks Node releases (`src/node.rs`): one update per release line
@@ -61,7 +67,8 @@ Commands:
   structs are the public format, with `schema_version` (`json::SCHEMA_VERSION`,
   now 1): bump it on breaking changes (renamed/removed fields, changed
   meaning); new fields are fine. With `-u`, versions get `node_update`
-  (`{version, security}`) / `superseded_by`, the document `node_releases`
+  (`{version, security}`) / `superseded_by`, packages `latest_needs_node`
+  (`{version, engines_node, min_node}`), the document `node_releases`
   (`latest`, `latest_lts`, `lts_codename`) and `node_releases_unreachable`. `--json` conflicts with `diff --command-only`;
   `which` with no match prints the document (with `suggestions`) and exits 1.
 
@@ -223,7 +230,8 @@ registry); `tempfile` for tests. `Cargo.lock` is committed (binary crate).
 - `src/node.rs` — Node release index: `releases` (fetch + cache, fetch fn
   as a parameter like the registry), `parse_index`, `plan` (per-line
   `Status::Update` / `Superseded`, `new_lines`); `output::node_summary` renders it
-- `src/registry.rs` — npm registry lookups + cache; `lookup` takes the fetch
+- `src/engines.rs` — `satisfies` / `min_newer` for `engines.node` ranges (pure)
+- `src/registry.rs` — npm registry lookups + cache (`CACHE_FORMAT` bumps invalidate old caches); `lookup` takes the fetch
   function as a parameter so tests use a fake registry (no network in tests)
 - `src/output.rs` — renderers returning styled `String`s: `tree`, `table`,
   `registry_summary`, `diff`, `found` (which), `npx_summary` / `npx_list` /
