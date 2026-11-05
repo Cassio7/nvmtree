@@ -19,6 +19,8 @@ const VERSION: Style = AnsiColor::Cyan.on_default();
 const DIM: Style = Style::new().dimmed();
 const WARN: Style = AnsiColor::Yellow.on_default();
 const MISSING: Style = AnsiColor::Red.on_default();
+/// Node release updates, distinct from package updates (`WARN`).
+const NODE_UPDATE: Style = AnsiColor::Magenta.on_default();
 
 /// `text` styled and left-aligned in `width` columns (padding stays unstyled).
 /// Like [`styled`], strips terminal control characters from `text`.
@@ -97,7 +99,7 @@ pub fn tree(entries: &[Entry]) -> String {
         out += &version_heading(entry);
         match node_marker(entry, entries) {
             NodeMarker::Update { to, security } => {
-                out += &format!("  {}", styled(WARN, &format!("↑ {to}")));
+                out += &format!("  {}", styled(NODE_UPDATE, &format!("↑ {to}")));
                 if security {
                     out += &format!(" {}", styled(MISSING, "(security)"));
                 }
@@ -306,7 +308,10 @@ pub fn node_summary(
         let _ = writeln!(
             out,
             "\n{} available. To update ({how}):",
-            styled(WARN, &format!("↑ {}", plural(updates.len(), "Node update")))
+            styled(
+                NODE_UPDATE,
+                &format!("↑ {}", plural(updates.len(), "Node update"))
+            )
         );
         for (entry, to, security) in updates {
             let from = plain_version(entry.version.parts);
@@ -383,7 +388,7 @@ pub fn node_summary(
             out,
             "\n{} {}, not installed. To install:",
             styled(
-                WARN,
+                NODE_UPDATE,
                 if new_lines.len() == 1 {
                     "New Node line:"
                 } else {
