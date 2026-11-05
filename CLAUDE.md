@@ -86,7 +86,9 @@ Commands:
   send package names/versions to the registry): per package, GET
   `<registry>/<name>/latest` and `<registry>/<name>/<installed>` (~5 KB each,
   scoped names as `@scope%2Fname`), in parallel (≤16 threads, 3 s timeout) via
-  `ureq`. Cached 6 h in `registry.json` under the OS cache dir
+  `ureq`. One shared work queue (`fetch_all`): a version list is queued as
+  soon as its `latest` answer shows it's needed, not after a full round.
+  Cached 6 h in `registry.json` under the OS cache dir
   (`~/Library/Caches/nvmtree`, `$XDG_CACHE_HOME/nvmtree` or `~/.cache/nvmtree`,
   `%LOCALAPPDATA%\nvmtree\cache`); 404s are cached too; on network failure stale
   cache entries are used. Registry = `$npm_config_registry` or npmjs. Never

@@ -3,9 +3,9 @@
 //! most runs make no network requests at all.
 
 use std::collections::{HashMap, HashSet};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, thread};
 
@@ -152,21 +152,6 @@ pub fn lookup(
         .filter(|(name, version, _)| is_safe_package_name(name) && is_safe_version(version))
         .collect();
 
-    let mut keys: Vec<String> = Vec::new();
-    for (name, version, _) in &packages {
-        keys.extend([manifest_key(name, "latest"), manifest_key(name, version)]);
-    }
-    let mut failed = HashSet::new();
-    let mut changed = update_cache(&mut cache, keys, now, ttl, refresh, &fetch, &mut failed);
-
-    // Second round, only for packages whose `latest` doesn't run on the Node
-    // version they're installed for: their version lists.
-    let latest = |cache: &Cache, name: &str| -> Option<Manifest> {
-        cache
-            .entries
-            .get(&manifest_key(name, "latest"))
-            .and_then(|e| e.manifest.clone())
-    };
     let needs_node = |latest: &Manifest, version: &str, node: Option<NodeVersion>| {
         let to = latest.version.as_deref().filter(|l| is_newer(l, version))?;
         let range = latest.engines_node.as_deref()?;
@@ -177,14 +162,67 @@ pub fn lookup(
             min_node: crate::engines::min_newer(range, node),
         })
     };
-    let lists: Vec<String> = packages
-        .iter()
-        .filter(|(name, version, node)| {
-            latest(&cache, name).is_some_and(|l| needs_node(&l, version, *node).is_some())
-        })
-        .map(|(name, _, _)| versions_key(name))
-        .collect();
-    changed |= update_cache(&mut cache, lists, now, ttl, refresh, &fetch, &mut failed);
+    let fetched = {
+        let cache = &cache;
+        let is_fresh = |key: &str| {
+            !refresh
+                && cache
+                    .entries
+                    .get(key)
+                    .is_some_and(|e| now.saturating_sub(e.fetched_at) < ttl.as_secs())
+        };
+        let cached = |key: &str| cache.entries.get(key).and_then(|e| e.manifest.as_ref());
+
+        // Packages by their `latest` key, to know which answers call for a
+        // version list.
+        let mut by_latest: HashMap<String, Vec<&Query>> = HashMap::new();
+        for query in &packages {
+            by_latest
+                .entry(manifest_key(&query.0, "latest"))
+                .or_default()
+                .push(query);
+        }
+        // The version list, when `latest` doesn't run on the Node version
+        // some installed copy is for and the list isn't freshly cached.
+        let list_for = |latest_key: &str, latest: Option<&Manifest>| -> Option<String> {
+            let latest = latest?;
+            let query = by_latest
+                .get(latest_key)?
+                .iter()
+                .find(|(_, version, node)| needs_node(latest, version, *node).is_some())?;
+            Some(versions_key(&query.0)).filter(|k| !is_fresh(k))
+        };
+
+        let mut queue: Vec<String> = Vec::new();
+        let mut seen = HashSet::new();
+        for (name, version, _) in &packages {
+            for key in [manifest_key(name, "latest"), manifest_key(name, version)] {
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                if !is_fresh(&key) {
+                    queue.push(key);
+                } else if let Some(list) = list_for(&key, cached(&key)) {
+                    queue.push(list);
+                }
+            }
+        }
+        // A list is fetched as soon as its `latest` answer is in, without
+        // waiting for the other manifests. On failure, a stale cached
+        // `latest` still decides.
+        let follow_up = |key: &str, fetched: &Fetched| -> Option<String> {
+            let latest = match fetched {
+                Fetched::Found(m) => Some(m),
+                Fetched::Missing => None,
+                Fetched::Failed => cached(key),
+            };
+            list_for(key, latest)
+        };
+        let max_keys = queue.len() + by_latest.len();
+        fetch_all(queue, max_keys, &fetch, &follow_up)
+    };
+    let mut failed = HashSet::new();
+    let changed = store(&mut cache, fetched, now, &mut failed);
 
     if changed && let Some(path) = cache_path {
         save_cache(path, &cache);
@@ -242,29 +280,16 @@ fn newest_for_node(
         .map(|(_, v)| v.clone())
 }
 
-/// Fetches the `keys` that aren't freshly cached and stores the answers.
-/// Keys that failed with nothing cached go into `failed`. Returns whether the
-/// cache changed.
-fn update_cache(
+/// Stores fetched answers in the cache. Keys that failed with nothing cached
+/// go into `failed`. Returns whether the cache changed.
+fn store(
     cache: &mut Cache,
-    keys: Vec<String>,
+    fetched: Vec<(String, Fetched)>,
     now: u64,
-    ttl: Duration,
-    refresh: bool,
-    fetch: &(impl Fn(&str) -> Fetched + Sync),
     failed: &mut HashSet<String>,
 ) -> bool {
-    let is_fresh =
-        |entry: &CacheEntry| !refresh && now.saturating_sub(entry.fetched_at) < ttl.as_secs();
-    let mut seen = HashSet::new();
-    let stale: Vec<String> = keys
-        .into_iter()
-        .filter(|k| seen.insert(k.clone()))
-        .filter(|k| !cache.entries.get(k).is_some_and(is_fresh))
-        .collect();
-
     let mut changed = false;
-    for (key, result) in fetch_all(&stale, fetch) {
+    for (key, result) in fetched {
         let manifest = match result {
             Fetched::Found(m) => Some(m),
             Fetched::Missing => None,
@@ -288,21 +313,80 @@ fn update_cache(
     changed
 }
 
-/// Calls `fetch` for every key using a small pool of threads.
-fn fetch_all(keys: &[String], fetch: &(impl Fn(&str) -> Fetched + Sync)) -> Vec<(String, Fetched)> {
-    let next = AtomicUsize::new(0);
-    let results = Mutex::new(Vec::with_capacity(keys.len()));
-    thread::scope(|s| {
-        for _ in 0..keys.len().min(MAX_PARALLEL_REQUESTS) {
-            s.spawn(|| {
-                while let Some(key) = keys.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let fetched = fetch(key);
-                    results.lock().unwrap().push((key.clone(), fetched));
+/// Work shared by the [`fetch_all`] threads.
+struct Queue {
+    pending: Vec<String>,
+    queued: HashSet<String>,
+    /// Keys being fetched right now: they may still add follow-ups.
+    in_flight: usize,
+    results: Vec<(String, Fetched)>,
+}
+
+/// Calls `fetch` for every key, plus the key `follow_up` returns for an
+/// answer (each key at most once), using a small pool of threads. `max_keys`
+/// bounds how many keys there can be, to size the pool.
+fn fetch_all(
+    keys: Vec<String>,
+    max_keys: usize,
+    fetch: &(impl Fn(&str) -> Fetched + Sync),
+    follow_up: &(impl Fn(&str, &Fetched) -> Option<String> + Sync),
+) -> Vec<(String, Fetched)> {
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let queue = Mutex::new(Queue {
+        queued: keys.iter().cloned().collect(),
+        pending: keys,
+        in_flight: 0,
+        results: Vec::new(),
+    });
+    let ready = Condvar::new();
+    let worker = || {
+        loop {
+            let key = {
+                let mut q = queue.lock().unwrap();
+                loop {
+                    if let Some(key) = q.pending.pop() {
+                        q.in_flight += 1;
+                        break Some(key);
+                    }
+                    if q.in_flight == 0 {
+                        break None;
+                    }
+                    q = ready.wait(q).unwrap();
                 }
-            });
+            };
+            let Some(key) = key else {
+                ready.notify_all();
+                return;
+            };
+            // A panic must not leave `in_flight` up (the others would wait
+            // forever): it counts as a failed request.
+            let (fetched, next) = panic::catch_unwind(AssertUnwindSafe(|| {
+                let fetched = fetch(&key);
+                let next = follow_up(&key, &fetched);
+                (fetched, next)
+            }))
+            .unwrap_or((Fetched::Failed, None));
+            let mut q = queue.lock().unwrap();
+            if let Some(next) = next
+                && q.queued.insert(next.clone())
+            {
+                // Popped next: follow-ups are the slow version lists.
+                q.pending.push(next);
+            }
+            q.in_flight -= 1;
+            q.results.push((key, fetched));
+            drop(q);
+            ready.notify_all();
+        }
+    };
+    thread::scope(|s| {
+        for _ in 0..max_keys.min(MAX_PARALLEL_REQUESTS) {
+            s.spawn(worker);
         }
     });
-    results.into_inner().unwrap()
+    queue.into_inner().unwrap().results
 }
 
 /// Writes the cache atomically; failures are ignored (the cache is optional).
@@ -455,7 +539,7 @@ pub fn is_newer(candidate: &str, installed: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     fn manifest(version: &str, deprecated: Option<&str>) -> Fetched {
@@ -720,6 +804,90 @@ mod tests {
         );
         assert_eq!(result.info[&query].update, None);
         assert!(result.incomplete);
+    }
+
+    #[test]
+    fn fetches_version_lists_without_waiting_for_other_manifests() {
+        let old_angular = (
+            "@angular/cli".to_string(),
+            "12.2.10".to_string(),
+            Some((12, 22, 12)),
+        );
+        let yoinks = (
+            "yoinks".to_string(),
+            "0.3.1".to_string(),
+            Some((12, 22, 12)),
+        );
+        // `yoinks/0.3.1` only answers once the angular version list has been
+        // requested: fetching in two rounds would make it time out.
+        let list_requested = (Mutex::new(false), Condvar::new());
+        let result = lookup(
+            &[old_angular.clone(), yoinks.clone()],
+            None,
+            CACHE_TTL,
+            false,
+            |key: &str| match key {
+                "@angular%2Fcli" => {
+                    *list_requested.0.lock().unwrap() = true;
+                    list_requested.1.notify_all();
+                    angular_registry(key)
+                }
+                "yoinks/0.3.1" => {
+                    let requested = list_requested.0.lock().unwrap();
+                    let (_guard, wait) = list_requested
+                        .1
+                        .wait_timeout_while(requested, Duration::from_secs(5), |r| !*r)
+                        .unwrap();
+                    if wait.timed_out() {
+                        Fetched::Failed
+                    } else {
+                        fake_registry(key)
+                    }
+                }
+                "yoinks/latest" => fake_registry(key),
+                _ => angular_registry(key),
+            },
+        );
+        assert!(!result.incomplete);
+        assert_eq!(result.info[&old_angular].update.as_deref(), Some("13.3.11"));
+        assert_eq!(result.info[&yoinks], Info::default());
+    }
+
+    #[test]
+    fn stale_latest_still_asks_for_the_version_list() {
+        let tmp = TempDir::new().unwrap();
+        let cache = tmp.path().join("registry.json");
+        let query = (
+            "@angular/cli".to_string(),
+            "12.2.10".to_string(),
+            Some((12, 22, 12)),
+        );
+        let queries = std::slice::from_ref(&query);
+        // Only the manifests are cached.
+        lookup(
+            queries,
+            Some(&cache),
+            CACHE_TTL,
+            false,
+            |key: &str| match key {
+                "@angular%2Fcli" => Fetched::Failed,
+                _ => angular_registry(key),
+            },
+        );
+
+        // Expired, and only the version list is reachable now.
+        let result = lookup(
+            queries,
+            Some(&cache),
+            Duration::ZERO,
+            false,
+            |key: &str| match key {
+                "@angular%2Fcli" => angular_registry(key),
+                _ => Fetched::Failed,
+            },
+        );
+        assert_eq!(result.info[&query].update.as_deref(), Some("13.3.11"));
+        assert!(!result.incomplete);
     }
 
     #[test]
