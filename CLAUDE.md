@@ -228,7 +228,7 @@ registry); `tempfile` for tests. `Cargo.lock` is committed (binary crate).
 - `src/json.rs` — `--json` documents (`list`, `diff`, `which`) + `print`
 - `src/npx.rs` — npx cache: `cache_dir`, `packages` (reads `_npx/<hash>/package.json`
   `_npx.packages` specs, legacy `dependencies`; names that would escape the
-  folder are ignored), `matching`, `dir_size` (doesn't follow symlinks)
+  folder are ignored), `matching`, `dir_sizes` (parallel, each folder once; doesn't follow symlinks)
 - `src/node.rs` — Node release index: `releases` (fetch + cache, fetch fn
   as a parameter like the registry), `parse_index`, `plan` (per-line
   `Status::Update` / `Superseded`, `new_lines`); `output::node_summary` renders it

@@ -228,7 +228,8 @@ fn npx(check_updates: bool, refresh: bool) -> Result<()> {
     let mut cached = npx::packages(&dir);
     let incomplete =
         check_updates && check_registry(cached.iter_mut().map(|p| (&mut p.package, None)), refresh);
-    let sizes: Vec<u64> = cached.iter().map(|p| npx::dir_size(&p.dir)).collect();
+    let dirs: Vec<&std::path::Path> = cached.iter().map(|p| p.dir.as_path()).collect();
+    let sizes = npx::dir_sizes(&dirs);
     anstream::print!(
         "{}",
         output::npx_list(&cached, &sizes, &tilde(&dir), SystemTime::now())

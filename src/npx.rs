@@ -6,9 +6,10 @@
 //! `package.json` whose `_npx.packages` lists the requested specs, and the
 //! packages themselves in `node_modules/`.
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::SystemTime;
+use std::{fs, thread};
 
 use crate::nvm::{GlobalPackage, read_package};
 
@@ -123,8 +124,43 @@ pub fn matching<'a>(packages: &'a [NpxPackage], query: &str) -> Vec<&'a NpxPacka
         .collect()
 }
 
+/// Most folders walked at once by [`dir_sizes`].
+const MAX_PARALLEL_WALKS: usize = 8;
+
+/// The [`dir_size`] of each of `dirs`, walking the folders in parallel. A
+/// folder listed several times (packages from one `npx` run share it) is
+/// walked once.
+pub fn dir_sizes(dirs: &[&Path]) -> Vec<u64> {
+    let mut unique = dirs.to_vec();
+    unique.sort();
+    unique.dedup();
+    let sizes: Vec<AtomicU64> = unique.iter().map(|_| AtomicU64::new(0)).collect();
+    let next = AtomicUsize::new(0);
+    let threads = thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(MAX_PARALLEL_WALKS)
+        .min(unique.len());
+    thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(dir) = unique.get(i) else { break };
+                    sizes[i].store(dir_size(dir), Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    dirs.iter()
+        .map(|dir| match unique.binary_search(dir) {
+            Ok(i) => sizes[i].load(Ordering::Relaxed),
+            Err(_) => 0,
+        })
+        .collect()
+}
+
 /// Total size in bytes of the files under `dir`. Symlinks aren't followed.
-pub fn dir_size(dir: &Path) -> u64 {
+fn dir_size(dir: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(path) = stack.pop() {
@@ -132,10 +168,14 @@ pub fn dir_size(dir: &Path) -> u64 {
             continue;
         };
         for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
+            // The type comes with the directory listing: no `stat` for
+            // folders, only files need one for their length.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 stack.push(entry.path());
-            } else {
+            } else if let Ok(meta) = entry.metadata() {
                 total += meta.len();
             }
         }
@@ -316,5 +356,20 @@ mod tests {
         write(&tmp.path().join("sub/deeper/b.txt"), "123");
         assert_eq!(dir_size(tmp.path()), 8);
         assert_eq!(dir_size(&tmp.path().join("nope")), 0);
+    }
+
+    #[test]
+    fn sizes_several_folders_in_order() {
+        let tmp = TempDir::new().unwrap();
+        let (a, b, missing) = (
+            tmp.path().join("a"),
+            tmp.path().join("b"),
+            tmp.path().join("nope"),
+        );
+        write(&a.join("x.txt"), "12345");
+        write(&b.join("sub/y.txt"), "12");
+        let dirs = [b.as_path(), a.as_path(), missing.as_path(), b.as_path()];
+        assert_eq!(dir_sizes(&dirs), [2, 5, 0, 2]);
+        assert!(dir_sizes(&[]).is_empty());
     }
 }
