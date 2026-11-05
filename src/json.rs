@@ -16,8 +16,9 @@ use crate::nvm::{Entry, Flavor, GlobalPackage, Install};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// A global package. `update` / `deprecated` are only filled in when the
-/// registry was checked (`-u`); otherwise they're `null`.
+/// A global package. `update` / `deprecated` / `latest_needs_node` are only
+/// filled in when the registry was checked (`-u`); otherwise they're `null`.
+/// `update` is the newest version that runs on this Node version.
 #[derive(Serialize)]
 pub struct Package<'a> {
     name: &'a str,
@@ -26,6 +27,18 @@ pub struct Package<'a> {
     bins: &'a [String],
     update: Option<&'a str>,
     deprecated: Option<&'a str>,
+    latest_needs_node: Option<NeedsNode<'a>>,
+}
+
+/// The registry's `latest` doesn't run on this Node version.
+#[derive(Serialize)]
+pub struct NeedsNode<'a> {
+    /// The `latest` version.
+    version: &'a str,
+    /// Its `engines.node` range.
+    engines_node: &'a str,
+    /// The oldest newer Node version that satisfies it, if any.
+    min_node: Option<String>,
 }
 
 impl<'a> From<&'a GlobalPackage> for Package<'a> {
@@ -37,6 +50,11 @@ impl<'a> From<&'a GlobalPackage> for Package<'a> {
             bins: &p.bins,
             update: p.registry.update.as_deref(),
             deprecated: p.registry.deprecated.as_deref(),
+            latest_needs_node: p.registry.latest_needs_node.as_ref().map(|n| NeedsNode {
+                version: &n.latest,
+                engines_node: &n.engines_node,
+                min_node: n.min_node.map(|(a, b, c)| format!("{a}.{b}.{c}")),
+            }),
         }
     }
 }
@@ -426,7 +444,8 @@ mod tests {
                         "superseded_by": null,
                         "packages": [{
                             "name": "typescript", "version": "7.0.2", "linked": false,
-                            "bins": ["tsc"], "update": null, "deprecated": null
+                            "bins": ["tsc"], "update": null, "deprecated": null,
+                            "latest_needs_node": null
                         }]
                     },
                     {
@@ -437,7 +456,8 @@ mod tests {
                         "superseded_by": "24.22.0",
                         "packages": [{
                             "name": "@shopify/cli", "version": "4.8.4", "linked": false,
-                            "bins": ["shopify"], "update": "4.9.3", "deprecated": null
+                            "bins": ["shopify"], "update": "4.9.3", "deprecated": null,
+                            "latest_needs_node": null
                         }]
                     }
                 ]

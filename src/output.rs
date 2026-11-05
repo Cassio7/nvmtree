@@ -62,8 +62,9 @@ fn columns(cells: &[(Style, String)], widths: &[usize]) -> String {
     parts.join("  ")
 }
 
-/// The per-package cells of a tree line:
-/// name, version, update, deprecated, linked, commands.
+/// The per-package cells of a tree line: name, version, update, deprecated,
+/// linked, commands, and what the registry's `latest` needs when it doesn't
+/// run on this Node version.
 fn package_cells(pkg: &GlobalPackage) -> Vec<(Style, String)> {
     let (version_style, version) = version_cell(pkg.version.as_deref());
     let text = |cond: bool, s: String| if cond { s } else { String::new() };
@@ -86,7 +87,24 @@ fn package_cells(pkg: &GlobalPackage) -> Vec<(Style, String)> {
             DIM,
             text(!pkg.bins.is_empty(), format!("→ {}", pkg.bins.join(", "))),
         ),
+        (
+            NODE_UPDATE,
+            pkg.registry
+                .latest_needs_node
+                .as_ref()
+                .map_or_else(String::new, needs_node_note),
+        ),
     ]
+}
+
+/// `(⬆ 22.2.6 needs Node ≥22.22.3)`: the minimum newer Node satisfying the
+/// latest version's `engines.node`, or the range itself when there is none.
+fn needs_node_note(needs: &crate::registry::NeedsNode) -> String {
+    let node = match needs.min_node {
+        Some(v) => format!("≥{}", plain_version(v)),
+        None => needs.engines_node.clone(),
+    };
+    format!("(⬆ {} needs Node {node})", needs.latest)
 }
 
 /// Each version followed by a tree of its packages.
@@ -451,8 +469,16 @@ pub fn registry_summary(entries: &[Entry], flavor: &Flavor, incomplete: bool) ->
             let specs: Vec<String> = entry
                 .packages
                 .iter()
-                .filter(|p| p.registry.update.is_some() && is_installable(p, false))
-                .map(|p| format!("{}@latest", p.name))
+                .filter(|p| is_installable(p, false))
+                .filter_map(|p| {
+                    let update = p.registry.update.as_ref()?;
+                    Some(if p.registry.update_is_latest() {
+                        format!("{}@latest", p.name)
+                    } else {
+                        // `latest` needs a newer Node: the newest that fits.
+                        format!("{}@{update}", p.name)
+                    })
+                })
                 .collect();
             if specs.is_empty() {
                 continue;
@@ -753,6 +779,7 @@ pub fn npx_list(packages: &[NpxPackage], sizes: &[u64], location: &str, now: Sys
         .zip(sizes)
         .map(|(p, &size)| {
             let mut cells = package_cells(&p.package);
+            cells.pop(); // needs a newer Node: no Node version for npx
             let bins = cells.pop().unwrap_or((DIM, String::new()));
             cells.pop(); // (linked): never for npx
             cells.push((DIM, human_size(size)));
@@ -938,6 +965,29 @@ v18.0.0
         entries[1].packages[0].registry.update = Some("4.9.3".into());
         entries[1].packages[2].registry.deprecated = Some("use something else".into());
         entries
+    }
+
+    #[test]
+    fn renders_updates_limited_by_node_version() {
+        let mut entries = sample();
+        entries[0].packages[0].registry.update = Some("5.9.9".into());
+        entries[0].packages[0].registry.latest_needs_node = Some(crate::registry::NeedsNode {
+            latest: "7.0.2".into(),
+            engines_node: ">=27".into(),
+            min_node: Some((27, 0, 0)),
+        });
+        let entries = &entries[..1];
+        assert_eq!(
+            plain(&tree(entries)),
+            "\
+v26.1.0
+  └─ typescript  5.9.2  ↑ 5.9.9  → tsc, tsserver  (⬆ 7.0.2 needs Node ≥27.0.0)
+"
+        );
+        assert!(
+            plain(&registry_summary(entries, &Flavor::NvmSh, false))
+                .contains("nvm exec 26.1.0 npm i -g typescript@5.9.9")
+        );
     }
 
     #[test]

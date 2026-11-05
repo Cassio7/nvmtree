@@ -1,4 +1,5 @@
 mod compare;
+mod engines;
 mod json;
 mod node;
 mod npx;
@@ -163,7 +164,10 @@ fn list(install: &nvm::Install, args: &ListArgs, all: bool, json: bool) -> Resul
                 )
             });
             let incomplete = check_registry(
-                entries.iter_mut().flat_map(|e| &mut e.packages),
+                entries.iter_mut().flat_map(|e| {
+                    let node = Some(e.version.parts);
+                    e.packages.iter_mut().map(move |p| (p, node))
+                }),
                 args.refresh,
             );
             let releases = releases.join().ok().flatten();
@@ -223,7 +227,7 @@ fn npx(check_updates: bool, refresh: bool) -> Result<()> {
     let dir = npx::cache_dir().context("can't locate the npm cache (set npm_config_cache)")?;
     let mut cached = npx::packages(&dir);
     let incomplete =
-        check_updates && check_registry(cached.iter_mut().map(|p| &mut p.package), refresh);
+        check_updates && check_registry(cached.iter_mut().map(|p| (&mut p.package, None)), refresh);
     let sizes: Vec<u64> = cached.iter().map(|p| npx::dir_size(&p.dir)).collect();
     anstream::print!(
         "{}",
@@ -248,18 +252,19 @@ fn tilde(path: &std::path::Path) -> String {
     }
 }
 
-/// Fills in update / deprecation info from the npm registry. Returns true when
-/// the registry couldn't be reached for some packages.
+/// Fills in update / deprecation info from the npm registry, for packages
+/// paired with the Node version they run on (`None`: no engine check).
+/// Returns true when the registry couldn't be reached for some packages.
 fn check_registry<'a>(
-    packages: impl Iterator<Item = &'a mut nvm::GlobalPackage>,
+    packages: impl Iterator<Item = (&'a mut nvm::GlobalPackage, Option<(u64, u64, u64)>)>,
     refresh: bool,
 ) -> bool {
-    let mut targets: Vec<&mut nvm::GlobalPackage> = packages.collect();
+    let mut targets: Vec<_> = packages.collect();
     // Linked packages are local checkouts, not registry releases.
-    let packages: Vec<(String, String)> = targets
+    let packages: Vec<registry::Query> = targets
         .iter()
-        .filter(|p| !p.linked)
-        .filter_map(|p| Some((p.name.clone(), p.version.clone()?)))
+        .filter(|(p, _)| !p.linked)
+        .filter_map(|(p, node)| Some((p.name.clone(), p.version.clone()?, *node)))
         .collect();
     if packages.is_empty() {
         return false;
@@ -271,9 +276,9 @@ fn check_registry<'a>(
         refresh,
         registry::http_fetcher(),
     );
-    for pkg in targets.iter_mut() {
+    for (pkg, node) in targets.iter_mut() {
         if let Some(version) = &pkg.version
-            && let Some(info) = lookup.info.get(&(pkg.name.clone(), version.clone()))
+            && let Some(info) = lookup.info.get(&(pkg.name.clone(), version.clone(), *node))
         {
             pkg.registry = info.clone();
         }
