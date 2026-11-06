@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="sharp" data-ground="sand" data-buttons="arrow" data-motion>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>nvmtree: global npm packages per Node version</title>
+<meta name="description" content="nvmtree is a small Rust CLI that lists every Node version installed with nvm and the global npm packages in each, offline, on macOS, Linux and Windows.">
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cstyle%3Erect%7Bfill:%23111%7D@media (prefers-color-scheme:dark)%7Brect%7Bfill:%23fafafa%7D%7D%3C/style%3E%3Crect x='2' y='2.5' width='20' height='5.5' rx='2.75'/%3E%3Crect x='2' y='9.25' width='14' height='5.5' rx='2.75'/%3E%3Crect x='2' y='16' width='8' height='5.5' rx='2.75'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/ui/cards.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/icons/icon.css">
+<!-- palette: the brand's own black and white; type: the dealt geist pairing -->
+<style>
+:root {
+  --p-bg: #fafafa; --p-surface: #f0f0f0; --p-ink: #111111; --p-muted: #4a4a4a;
+  --p-accent: #111111; --p-accent-ink: #fafafa; --p-action: #111111; --p-action-ink: #fafafa;
+  --p-inv-bg: #111111; --p-inv-surface: #1e1e1e; --p-inv-ink: #fafafa; --p-inv-muted: #989898;
+  --p-inv-accent: #fafafa; --p-inv-accent-ink: #111111; --p-inv-action: #fafafa; --p-inv-action-ink: #111111;
+  --font-display: "Geist", system-ui, sans-serif;
+  --font-text: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.035em;
+  --display-tracking-xl: -0.045em;
+}
+</style>
+<link rel="stylesheet" href="assets/ui/base.css">
+<script src="assets/backgrounds/backgrounds.js"></script>
+<!-- page CSS: the brand's grey ground, its terminal face, and what sits inside the visuals -->
+<style>
+  /* brand: black and white, so the lit ground is held in greys */
+  html[data-ground] { --ground-bg: #d6d6d6; --ground-surface: #e6e6e6; --ground-ink: #111111; --ground-muted: #4a4a4a; --ground-accent: #8a8a8a; }
+  /* brand: the terminal face for headlines and the wordmark */
+  h1, h2, .nav__logo, .close__word { font-family: var(--font-mono); letter-spacing: -0.03em; }
+  .close__word { letter-spacing: -0.06em; line-height: 1; padding-top: .04em; }
+
+  /* one terminal window: the CLI's real output as live text */
+  .term { background: #111111; color: #e6e6e6; border-radius: 8px; overflow: hidden; text-align: left;
+    box-shadow: 0 0 0 1px rgb(0 0 0 / .14), 0 24px 60px -28px rgb(0 0 0 / .5);
+    font: 400 13px/20px var(--font-mono); }
+  .term__bar { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 14px; border-bottom: 1px solid rgb(255 255 255 / .08); color: #9a9a9a; font-size: 12px; }
+  .term__bar i { width: 10px; height: 10px; border-radius: 50%; background: #3a3a3a; display: block; }
+  .term__dots { display: flex; gap: 6px; }
+  .term pre { margin: 0; padding: 14px 18px 16px; font: inherit; white-space: pre; }
+  .term pre > span { display: block; min-height: 1lh; }
+  .term .p { color: #8f8f8f; } .term .c { color: #ffffff; } .term .d { color: #8f8f8f; }
+  .term .b { color: #ffffff; font-weight: 500; } .term .v { color: #cfcfcf; } .term .k { color: #d4d4d4; }
+  .term .u { color: #ffffff; font-weight: 500; }
+  .term .wrapln { white-space: pre-wrap; padding-left: 5ch; text-indent: -3ch; }
+
+  /* the hero collage: three or two terminal pieces a set, sized by the collage's width */
+  .hero--triptych .ly-collage { container-type: inline-size; }
+  .ly-collage .ly-piece.term { width: max-content; height: auto; font-size: clamp(10px, 1.91cqw, 12px); line-height: 1.65; background: #111111; border-radius: 8px; }
+  .ly-collage .term__bar { height: 2.6em; font-size: 1em; border-bottom: 0; background: #1b1b1b; }
+  .ly-collage .term pre { padding: 1em 1.4em 1.2em; }
+  .pc-a { left: 4%; top: 4%; }
+  .pc-b { left: 4%; top: 47%; }
+  .pc-z { right: 4%; bottom: 4%; }
+  .s2 .pc-a { left: 4%; top: 4%; }
+  .s3 .pc-b { left: auto; right: 4%; top: 34%; }
+  .hero--triptych .hero__cta .btn { height: var(--btn-h, 44px); font-size: var(--t-body); padding-inline: var(--s-6); }
+  .hero__note { margin-bottom: var(--s-4); font-size: var(--t-small); }
+  @media (max-width: 1023px) { .ly-collage .ly-piece.term { font-size: clamp(10px, 1.5cqw, 11px); } }
+  @media (max-width: 639px) {
+    .ly-collage .pc-b { display: none; }
+    .ly-collage .ly-piece.term { left: 0; right: 0; width: auto; font-size: 10px; }
+    .ly-collage .pc-a { top: 0; }
+    .ly-collage .pc-z { bottom: 0; }
+  }
+
+  /* the app frame: one terminal, two panes, across the .wrap */
+  .app.ui { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); margin-top: var(--s-7); background: #111111; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 1px rgb(0 0 0 / .14), 0 24px 60px -28px rgb(0 0 0 / .5); }
+  .app > .app__pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: 0; box-shadow: none; }
+  .app > .app__pane + .app__pane { border-left: 1px solid rgb(255 255 255 / .1); }
+  .app > .app__pane::after { content: ""; position: absolute; inset: auto 0 0 0; height: 64px; background: linear-gradient(transparent, #111111); pointer-events: none; }
+  .app .term { overflow: visible; background: none; box-shadow: none; border-radius: 0; }
+  .app .term pre { padding: 18px 24px; }
+  @media (min-width: 1024px) and (max-width: 1279px) { .app.ui { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); } .app .term { font-size: 12px; } }
+  @media (max-width: 1023px) {
+    .app.ui { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .app > .app__pane--list { max-height: 252px; }
+    .app > .app__pane--list::after { display: none; }
+    .app > .app__pane + .app__pane { border-left: 0; border-top: 1px solid rgb(255 255 255 / .1); }
+    .app .term { font-size: 12px; }
+  }
+  @media (max-width: 639px) {
+    .app.ui { grid-template-rows: minmax(0, 1fr); }
+    .app > .app__pane--open { display: none; }
+    .app > .app__pane--list { max-height: none; }
+    .app > .app__pane--list::after { display: block; }
+    .app .term { font-size: 11px; line-height: 18px; }
+    .app .term pre { padding: 16px; }
+  }
+
+  /* the command cards */
+  #commands .panel { --p-h: 400px; }
+  #commands .card > .panel { flex: none; height: var(--p-h); }
+  #commands .stage > .term { font-size: 12px; line-height: 19px; }
+  @media (min-width: 1024px) and (max-width: 1279px) { #commands .stage > .term { font-size: 11px; line-height: 18px; } }
+  @media (min-width: 640px) and (max-width: 1023px) { #commands .grid > .card { grid-column: 1 / -1; } #commands .panel { --p-h: clamp(160px, calc((100svh - 460px) / 2 - 120px), 300px); } #commands .stage > .term { font-size: 11px; line-height: 18px; } }
+  @media (max-width: 639px) { #commands .panel { --p-h: 140px; } #commands .wrap > .grid:last-child .panel { --p-h: 212px; } #commands .stage > .term { font-size: 11px; line-height: 18px; } #commands .stage > .term pre { white-space: pre-wrap; } }
+
+  /* install: the three commands, each with its system's icon and a copy button */
+  #install .frame--split { --ratio: 96%; }
+  @media (min-width: 1024px) and (max-width: 1279px) { #install .frame--split { --ratio: 120%; } }
+  @media (min-width: 640px) and (max-width: 1023px) { #install .frame--split { --ratio: clamp(320px, calc(100svh - 580px), 640px); } }
+  #install .cmds { position: absolute; inset: 48px 48px auto; }
+  .cmd { padding: 16px 20px 18px; }
+  .cmd + .cmd { border-top: 1px solid rgb(255 255 255 / .08); }
+  .cmd__head { display: flex; align-items: center; gap: 10px; color: #b4b4b4; font: 500 13px/1 var(--font-text); margin-bottom: 10px; }
+  .cmd__head .ic-tile { flex: none; }
+  .cmd__head span { margin-right: auto; }
+  .cmd code { display: block; font: inherit; color: #ffffff; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cmd button { font: 500 13px/1 var(--font-text); color: #111111; background: #fafafa; border: 0; border-radius: 4px; padding: 0 12px; height: 32px; min-width: 64px; cursor: pointer; transition: background-color var(--m-in, .14s) ease, transform var(--m-press, .09s) ease; }
+  .cmd button:hover { background: #ffffff; } .cmd button:active { transform: translateY(1px) scale(.985); }
+  @media (min-width: 640px) and (max-width: 1023px) { #questions .faq > .faq__item { padding-block: var(--s-6); } }
+  p code, li code, .faq code { font-family: var(--font-mono); font-size: .92em; }
+  @media (max-width: 639px) {
+    #install .frame { --ratio: 0px; }
+    #install .stage { position: relative; inset: auto; }
+    #install .cmds { position: relative; inset: auto; margin: 16px; }
+    #install .cmd { padding: 12px 16px 14px; }
+    #install .install__env { display: none; }
+  }
+</style>
+</head>
+<body>
+<!-- type: software (a developer tool: a Rust CLI)
+     deal: hero triptych, nav nav-mega, close close-word, footer footer-columns, rhythm space,
+     buttons arrow, mark stack, radius sharp, ground sand (held in greys for the black-and-white
+     brand), palette the brand's own (#fafafa / #111111), type geist (headlines in Geist Mono for
+     the brand's terminal face)
+     effect: gradient-mesh in the install frame (the one [data-visual] band); card grounds:
+     painterly-landscape, held still in greys, in the command cards
+     moments: none. scene: none. grounds: none.
+     plan: hero (the CLI's outputs, three sets) · updates (app-frame: nvmtree -u, 1 screen) ·
+     commands (features-2x2 over two screens, .g2: diff, which, npx, --json) ·
+     install (split-text-left with the effect, 1 screen) · faq (1 screen) · footer.closing -->
+
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="nav__logo" href="#top"><span class="mark" data-mark="stack" aria-hidden="true"></span>nvmtree</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item"><a class="nav__link" href="#updates">Updates</a></div>
+      <div class="nav__item">
+        <a class="nav__link" href="#commands">Commands <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <div class="menu-col span-3">
+              <p class="t-label">Compare</p>
+              <a href="#commands">nvmtree --table<span>Packages by version, as a grid</span></a>
+              <a href="#commands">nvmtree diff 22 24<span>What the new version lacks</span></a>
+            </div>
+            <div class="menu-col span-3">
+              <p class="t-label">Find</p>
+              <a href="#commands">nvmtree which tsc<span>Versions that have a command</span></a>
+              <a href="#commands">nvmtree npx<span>What npx keeps in its cache</span></a>
+            </div>
+            <a class="menu-card span-3 start-10" href="https://github.com/Cassio7/nvmtree/releases/latest">
+              <div class="panel frame" data-visual>
+                <div class="stage stage--fade-br">
+                  <div class="term at-corner" style="--ax: 24px; --ay: 24px" aria-hidden="true">
+<pre><span><span class="p">$</span> <span class="c">nvmtree --version</span></span><span>nvmtree 0.7.1</span></pre>
+                  </div>
+                </div>
+              </div>
+              <span class="t-label">Version 0.7.1</span>
+              <strong>Read the release notes</strong>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="#install">Install</a></div>
+      <div class="nav__item"><a class="nav__link" href="#questions">Questions</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="nav__link" href="https://github.com/Cassio7/nvmtree">GitHub</a>
+      <a class="btn btn--primary" href="#install">Download nvmtree<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero hero--triptych" aria-labelledby="hero-h">
+    <div class="wrap"><div class="hero-text grid hero__grid">
+      <div class="span-3">
+        <p class="hero__note"><a class="link" href="https://github.com/Cassio7/nvmtree/releases/latest">Version 0.7.1</a></p>
+        <h1 id="hero-h">Global npm packages per Node</h1>
+        <p class="hero__lead">nvmtree lists every Node version nvm installed and the global packages in each. One Rust binary for macOS, Linux and Windows.</p>
+      </div>
+      <div class="ly-collage span-6 start-4" role="img" aria-label="nvmtree output in three sets: the tree of versions and packages with a table and a search; a diff between two versions with the npx cache; the update check">
+        <div class="ly-collage__set is-on">
+          <div class="ly-piece term pc-a">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree</div>
+<pre><span><span class="b">v24.22.0</span> <span class="d">(default)</span></span><span>  <span class="d">├─</span> @shopify/cli  <span class="v">3.85.4</span>   <span class="d">→ shopify</span></span><span>  <span class="d">├─</span> pnpm          <span class="v">10.18.2</span>  <span class="d">→ pnpm, pnpx</span></span><span>  <span class="d">└─</span> typescript    <span class="v">5.9.3</span>    <span class="d">→ tsc, tsserver</span></span><span></span><span><span class="b">v22.21.1</span></span><span>  <span class="d">├─</span> eslint      <span class="v">9.12.0</span>  <span class="d">→ eslint</span></span><span>  <span class="d">├─</span> pnpm        <span class="v">9.15.0</span>  <span class="d">→ pnpm, pnpx</span></span><span>  <span class="d">└─</span> typescript  <span class="v">5.6.3</span>   <span class="d">→ tsc, tsserver</span></span></pre>
+          </div>
+          <div class="ly-piece term pc-b">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree which tsc</div>
+<pre><span><span class="b">typescript</span>  <span class="d">→ tsc, tsserver</span></span><span>  v24.22.0 <span class="d">(default)</span>  <span class="v">5.9.3</span></span><span>  v22.21.1            <span class="v">5.6.3</span></span></pre>
+          </div>
+          <div class="ly-piece term pc-z">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree --table</div>
+<pre><span><span class="b">package       v24.22.0*  v22.21.1</span></span><span>@shopify/cli  <span class="v">3.85.4</span>     <span class="d">-</span></span><span>eslint        <span class="d">-</span>          <span class="v">9.12.0</span></span><span>pnpm          <span class="v">10.18.2</span>    <span class="v">9.15.0</span></span><span>typescript    <span class="v">5.9.3</span>      <span class="v">5.6.3</span></span><span class="d">* default</span></pre>
+          </div>
+        </div>
+        <div class="ly-collage__set s2" aria-hidden="true">
+          <div class="ly-piece term pc-a">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree diff 22 24</div>
+<pre><span><span class="b">v22.21.1 → v24.22.0</span> <span class="d">(default)</span></span><span></span><span><span class="b">Only in v22.21.1:</span></span><span>  eslint  <span class="v">9.12.0</span></span><span></span><span><span class="b">Different versions:</span></span><span>  pnpm        <span class="v">9.15.0 → 10.18.2</span></span><span>  typescript  <span class="v">5.6.3 → 5.9.3</span></span><span></span><span><span class="d">To install the missing packages in v24.22.0:</span></span><span>  <span class="k">nvm exec 24.22.0 npm i -g eslint</span></span></pre>
+          </div>
+          <div class="ly-piece term pc-z">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree npx</div>
+<pre><span><span class="b">npx cache</span> <span class="d">(~/.npm/_npx, shared by all Node versions)</span></span><span>  <span class="d">└─</span> skills  <span class="v">1.7.6</span>  4.1 MB  <span class="d">used 3 minutes ago</span></span><span></span><span>1 package, 4.1 MB <span class="d">· clean:</span> npm cache clean --force</span></pre>
+          </div>
+        </div>
+        <div class="ly-collage__set s3" aria-hidden="true">
+          <div class="ly-piece term pc-a">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree -u</div>
+<pre><span><span class="b">v24.22.0</span> <span class="d">(default)</span>  <span class="u">↑ v24.22.2</span> <span class="d">(security)</span></span><span>  <span class="d">├─</span> @shopify/cli  <span class="v">3.85.4</span>   <span class="u">↑ 5.0.1</span>    <span class="d">→ shopify</span></span><span>  <span class="d">├─</span> pnpm          <span class="v">10.18.2</span>  <span class="u">↑ 12.18.0</span>  <span class="d">→ pnpm, pnpx</span></span><span>  <span class="d">└─</span> typescript    <span class="v">5.9.3</span>    <span class="u">↑ 7.0.2</span>    <span class="d">→ tsc, tsserver</span></span></pre>
+          </div>
+          <div class="ly-piece term pc-z">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree --table -u</div>
+<pre><span><span class="b">package       v24.22.0* ↑  v22.21.1 ↑</span></span><span>@shopify/cli  <span class="v">3.85.4</span> <span class="u">↑</span>     <span class="d">-</span></span><span>eslint        <span class="d">-</span>            <span class="v">9.12.0</span> <span class="u">↑ !</span></span><span>pnpm          <span class="v">10.18.2</span> <span class="u">↑</span>    <span class="v">9.15.0</span> <span class="u">↑</span></span><span>typescript    <span class="v">5.9.3</span> <span class="u">↑</span>      <span class="v">5.6.3</span> <span class="u">↑</span></span><span class="d">* default   ↑ update available   ! deprecated</span></pre>
+          </div>
+        </div>
+      </div>
+      <div class="span-3 start-10 hero__cta"><a class="btn btn--primary" href="#install">Download nvmtree<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a></div>
+    </div></div>
+  </section>
+
+  <section class="section" id="updates" aria-labelledby="updates-h">
+    <div class="wrap">
+      <div class="grid">
+        <h2 id="updates-h" class="span-6">Update checks for npm and Node</h2>
+        <p class="span-6 start-7">With <code>-u</code>, nvmtree asks npm and nodejs.org what is newer, marks deprecated packages and prints the <code>nvm</code> and <code>npm</code> lines to run. It never installs anything. <a class="link" href="https://github.com/Cassio7/nvmtree#usage">Read the usage guide</a></p>
+      </div>
+      <div class="ui app fill" data-visual>
+        <div class="app__pane app__pane--list"><div class="term" role="img" aria-label="The package table with update marks, a search for eslint and the list for Node 24">
+<pre><span><span class="p">$</span> <span class="c">nvmtree --table -u</span></span><span><span class="b">package       v24.22.0* ↑  v22.21.1 ↑</span></span><span>@shopify/cli  <span class="v">3.85.4</span> <span class="u">↑</span>     <span class="d">-</span></span><span>eslint        <span class="d">-</span>            <span class="v">9.12.0</span> <span class="u">↑ !</span></span><span>pnpm          <span class="v">10.18.2</span> <span class="u">↑</span>    <span class="v">9.15.0</span> <span class="u">↑</span></span><span>typescript    <span class="v">5.9.3</span> <span class="u">↑</span>      <span class="v">5.6.3</span> <span class="u">↑</span></span><span class="d">* default   ↑ update available   ! deprecated</span><span></span><span><span class="p">$</span> <span class="c">nvmtree which eslint</span></span><span><span class="b">eslint</span>  <span class="d">→ eslint</span></span><span>  v22.21.1  <span class="v">9.12.0</span></span><span>  <span class="d">not in: v24.22.0 (default)</span></span><span></span><span><span class="p">$</span> <span class="c">nvmtree 24</span></span><span><span class="b">v24.22.0</span> <span class="d">(default)</span></span><span>  <span class="d">├─</span> @shopify/cli  <span class="v">3.85.4</span>   <span class="d">→ shopify</span></span><span>  <span class="d">├─</span> pnpm          <span class="v">10.18.2</span>  <span class="d">→ pnpm, pnpx</span></span><span>  <span class="d">└─</span> typescript    <span class="v">5.9.3</span>    <span class="d">→ tsc, tsserver</span></span><span></span><span><span class="p">$</span></span></pre>
+        </div></div>
+        <div class="app__pane app__pane--open"><div class="term" role="img" aria-label="nvmtree -u: every newer package and Node version, a deprecated package, and the commands to update">
+<pre><span><span class="p">$</span> <span class="c">nvmtree -u</span></span><span><span class="b">v24.22.0</span> <span class="d">(default)</span>  <span class="u">↑ v24.22.2</span> <span class="d">(security)</span></span><span>  <span class="d">├─</span> @shopify/cli  <span class="v">3.85.4</span>   <span class="u">↑ 5.0.1</span>    <span class="d">→ shopify</span></span><span>  <span class="d">├─</span> pnpm          <span class="v">10.18.2</span>  <span class="u">↑ 12.18.0</span>  <span class="d">→ pnpm, pnpx</span></span><span>  <span class="d">└─</span> typescript    <span class="v">5.9.3</span>    <span class="u">↑ 7.0.2</span>    <span class="d">→ tsc, tsserver</span></span><span></span><span><span class="b">v22.21.1</span>  <span class="u">↑ v22.23.4</span> <span class="d">(security)</span></span><span>  <span class="d">├─</span> eslint      <span class="v">9.12.0</span>  <span class="u">↑ 10.14.0</span>  <span class="b">deprecated</span>  <span class="d">→ eslint</span></span><span class="wrapln d">  │  This version is no longer supported. Please see https://eslint.org/version-support for other options.</span><span>  <span class="d">├─</span> pnpm        <span class="v">9.15.0</span>  <span class="u">↑ 12.18.0</span>              <span class="d">→ pnpm, pnpx</span></span><span>  <span class="d">└─</span> typescript  <span class="v">5.6.3</span>   <span class="u">↑ 7.0.2</span>                <span class="d">→ tsc, tsserver</span></span><span></span><span><span class="u">↑ 2 Node updates</span> available. To update (installs it and copies the global packages):</span><span>  <span class="k">nvm install 24.22.2 --reinstall-packages-from=24.22.0</span>  <span class="d"># security release</span></span><span>  <span class="k">nvm install 22.23.4 --reinstall-packages-from=22.21.1</span>  <span class="d"># security release</span></span><span></span><span>New Node line: <span class="b">v26.13.0</span> (LTS Lithium), not installed. To install:</span><span>  <span class="k">nvm install --lts</span></span><span></span><span><span class="u">↑ 6 updates</span> available. To update:</span><span>  <span class="k">nvm exec 24.22.0 npm i -g @shopify/cli@latest pnpm@latest typescript@latest</span></span><span>  <span class="k">nvm exec 22.21.1 npm i -g eslint@latest pnpm@latest typescript@latest</span></span><span><span class="b">! 1 package deprecated:</span> eslint in v22.21.1</span></pre>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section g2 g2m" id="commands" aria-labelledby="commands-h" style="--h: 2">
+    <div class="wrap">
+      <div>
+      <div class="section-head">
+        <h2 id="commands-h">Four nvmtree commands. <span class="muted">All read-only.</span></h2>
+      </div>
+      <div class="grid">
+        <article class="card card--open card--row span-6 m-nolift">
+          <h3 class="t-card">Moves packages to a new Node</h3>
+          <p>Compares two versions and prints the one npm line that installs what the new one lacks.</p>
+          <div class="panel frame" data-visual data-fx="painterly-landscape" data-fx-seed="31" data-fx-palette='{"bg":"#c9c9c9","surface":"#dcdcdc","ink":"#111111","accent":"#a6a6a6"}' data-fx-params='{"drift":0,"speed":0,"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62}'>
+            <div class="stage stage--fade-b">
+              <div class="term at-rise fit" style="--fit-max: 520px; --w: 88%; --ay: 40px; --ay-sm: 24px" role="img" aria-label="nvmtree diff 22 24: eslint is missing from v24 and the command that installs it">
+                <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree diff 22 24</div>
+<pre><span><span class="b">v22.21.1 → v24.22.0</span> <span class="d">(default)</span></span><span></span><span><span class="b">Only in v22.21.1:</span></span><span>  eslint  <span class="v">9.12.0</span></span><span></span><span><span class="d">To install the missing packages in v24.22.0:</span></span><span>  <span class="k">nvm exec 24.22.0 npm i -g eslint</span></span><span></span><span></span></pre>
+              </div>
+            </div>
+          </div>
+        </article>
+        <article class="card card--open card--row span-6 m-nolift">
+          <h3 class="t-card">Finds the versions with a tool</h3>
+          <p>Search by package or by command: <code>which tsc</code> finds typescript in every version.</p>
+          <div class="panel frame" data-visual data-fx="painterly-landscape" data-fx-seed="47" data-fx-palette='{"bg":"#cfcfcf","surface":"#e0e0e0","ink":"#111111","accent":"#ababab"}' data-fx-params='{"drift":0,"speed":0,"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62}'>
+            <div class="stage stage--fade-b">
+              <div class="term at-rise fit" style="--fit-max: 520px; --w: 88%; --ay: 40px; --ay-sm: 24px" role="img" aria-label="nvmtree which tsc: typescript in two Node versions">
+                <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree which tsc</div>
+<pre><span><span class="b">typescript</span>  <span class="d">→ tsc, tsserver</span></span><span>  v24.22.0 <span class="d">(default)</span>  <span class="v">5.9.3</span></span><span>  v22.21.1            <span class="v">5.6.3</span></span></pre>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+      </div>
+      <div class="grid">
+        <article class="card card--open card--row span-6 m-nolift">
+          <h3 class="t-card">Lists the npx cache</h3>
+          <p>What npx keeps for all Node versions, with each folder's size, last use and the clean command.</p>
+          <div class="panel frame" data-visual data-fx="painterly-landscape" data-fx-seed="58" data-fx-palette='{"bg":"#cbcbcb","surface":"#dedede","ink":"#111111","accent":"#a8a8a8"}' data-fx-params='{"drift":0,"speed":0,"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62}'>
+            <div class="stage stage--fade-b">
+              <div class="term at-rise fit" style="--fit-max: 520px; --w: 88%; --ay: 40px; --ay-sm: 24px" role="img" aria-label="nvmtree npx: one cached package with its size and last use">
+                <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree npx</div>
+<pre><span><span class="b">npx cache</span> <span class="d">(~/.npm/_npx, shared by all Node versions)</span></span><span>  <span class="d">└─</span> skills  <span class="v">1.7.6</span>  4.1 MB  <span class="d">used 3 minutes ago</span></span><span></span><span>1 package, 4.1 MB <span class="d">· clean:</span> npm cache clean --force</span><span></span></pre>
+              </div>
+            </div>
+          </div>
+        </article>
+        <article class="card card--open card--row span-6 m-nolift">
+          <h3 class="t-card">Prints JSON for your scripts</h3>
+          <p>Add <code>--json</code> to the list, <code>diff</code> or <code>which</code> for one document with a schema version.</p>
+          <div class="panel frame" data-visual data-fx="painterly-landscape" data-fx-seed="64" data-fx-palette='{"bg":"#cdcdcd","surface":"#dfdfdf","ink":"#111111","accent":"#a9a9a9"}' data-fx-params='{"drift":0,"speed":0,"blur":1,"brush":0.35,"slope":0,"hillY":0.3,"horizon":0.62}'>
+            <div class="stage stage--fade-b">
+              <div class="term at-rise fit" style="--fit-max: 520px; --w: 88%; --ay: 40px; --ay-sm: 24px" role="img" aria-label="nvmtree --json read with jq: the installed versions, the packages of the default one and the schema version">
+                <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>nvmtree --json</div>
+<pre><span><span class="p">$</span> <span class="c">nvmtree --json | jq -r '.versions[].version'</span></span><span>24.22.0</span><span>22.21.1</span><span></span><span><span class="p">$</span> <span class="c">nvmtree 24 --json | jq '.versions[].packages[].name'</span></span><span>"@shopify/cli"</span><span>"pnpm"</span><span>"typescript"</span><span></span><span><span class="p">$</span> <span class="c">nvmtree --json | jq .schema_version</span></span><span>1</span></pre>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-6 stack-4">
+          <h2 id="install-h">Install nvmtree in one line</h2>
+          <p class="t-lead">The script picks the binary for your system, checks its SHA256 checksum and puts it in <code>~/.local/bin</code>. Run it again to update.</p>
+          <p class="install__env">Pin a release with <code>NVMTREE_VERSION</code>, change the folder with <code>NVMTREE_INSTALL_DIR</code>.</p>
+          <p><a class="link" href="https://github.com/Cassio7/nvmtree/releases/latest">Download a binary from releases</a></p>
+        </div>
+        <div class="frame frame--split span-6 start-7" data-visual data-fx="gradient-mesh" data-fx-seed="23" data-fx-palette='{"bg":"#d2d2d2","surface":"#e6e6e6","ink":"#111111","muted":"#4a4a4a","accent":"#9c9c9c"}' data-fx-params='{"speed":0.25}'>
+          <div class="stage"><div class="ui term cmds" role="img" aria-label="The three install commands: the shell script for macOS and Linux, PowerShell for Windows, and Cargo">
+            <div class="term__bar"><span class="term__dots"><i></i><i></i><i></i></span>install</div>
+            <div class="cmd"><div class="cmd__head"><span class="ic-tile"><img class="ic ic-20 ic-ink" data-icon="apple" src="assets/icons/apple.svg" alt="" width="17" height="20"></span><span class="ic-tile"><img class="ic ic-20" data-icon="linux-tux" src="assets/icons/linux-tux.svg" alt="" width="20" height="20"></span><span>macOS and Linux</span><button type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/Cassio7/nvmtree/main/install.sh | sh">Copy</button></div><code><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/Cassio7/nvmtree/main/install.sh | sh</code></div>
+            <div class="cmd"><div class="cmd__head"><span class="ic-tile"><img class="ic ic-20" data-icon="windows" src="assets/icons/windows.svg" alt="" width="20" height="20"></span><span>Windows, PowerShell</span><button type="button" data-copy="irm https://raw.githubusercontent.com/Cassio7/nvmtree/main/install.ps1 | iex">Copy</button></div><code><span class="p">&gt;</span> irm https://raw.githubusercontent.com/Cassio7/nvmtree/main/install.ps1 | iex</code></div>
+            <div class="cmd"><div class="cmd__head"><span class="ic-tile"><img class="ic ic-20 ic-ink" data-icon="rust" src="assets/icons/rust.svg" alt="" width="20" height="20"></span><span>From source, with Cargo</span><button type="button" data-copy="cargo install --git https://github.com/Cassio7/nvmtree">Copy</button></div><code><span class="p">$</span> cargo install --git https://github.com/Cassio7/nvmtree</code></div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="questions" aria-labelledby="questions-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-6 stack-4">
+          <h2 id="questions-h">Questions</h2>
+          <p>Anything else is in the README and the <code>--help</code> of each command.</p>
+          <p style="display: flex; align-items: center; gap: 12px"><img class="ic ic-24 ic-ink" data-icon="github" src="assets/icons/github.svg" alt="" width="24" height="24"><a class="link" href="https://github.com/Cassio7/nvmtree/issues">Open an issue on GitHub</a></p>
+        </div>
+        <div class="faq span-6 start-7">
+          <div class="faq__item"><h3>Does nvmtree change anything?</h3><p>No. It reads folders and prints. Updates, installs and cleanups are printed as commands for you to run.</p></div>
+          <div class="faq__item"><h3>Does nvmtree use the network?</h3><p>Only with <code>-u</code>. It then asks the npm registry and nodejs.org for newer versions and caches the answers for 6 hours.</p></div>
+          <div class="faq__item"><h3>Will nvmtree suggest an update my Node can't run?</h3><p>No. Updates respect each package's <code>engines.node</code> and pin the newest version that runs on that Node.</p></div>
+          <div class="faq__item"><h3>Can a script read the nvmtree output?</h3><p>Yes. <code>--json</code> prints one JSON document for the list, <code>diff</code> and <code>which</code>.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer closing" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--word">
+      <div class="section-head--split">
+        <div><h2 id="close-h">nvmtree for macOS, Linux and Windows</h2><p class="t-lead">Free and open source under the MIT license.</p></div>
+        <a class="btn btn--primary" href="#install">Download nvmtree<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+      </div>
+      <p class="close__word" aria-hidden="true">nvmtree</p>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="#top"><span class="mark" data-mark="stack" aria-hidden="true"></span>nvmtree</a>
+          <p class="footer__lede">Every Node version and its global packages.</p>
+        </div>
+        <div class="span-2 start-5 footer__col"><h4>Updates</h4><ul><li><a href="#updates">Update checks</a></li><li><a href="https://github.com/Cassio7/nvmtree/releases">Releases</a></li></ul></div>
+        <div class="span-2 footer__col"><h4>Commands</h4><ul><li><a href="#commands">diff, which, npx</a></li><li><a href="https://github.com/Cassio7/nvmtree#usage">Usage guide</a></li></ul></div>
+        <div class="span-2 footer__col"><h4>Install</h4><ul><li><a href="#install">Install script</a></li><li><a href="https://github.com/Cassio7/nvmtree/releases/latest">Binaries</a></li></ul></div>
+        <div class="span-2 footer__col"><h4>Questions</h4><ul><li><a href="#questions">Questions</a></li><li><a href="https://github.com/Cassio7/nvmtree/issues">Issues</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 nvmtree &nbsp; <a href="https://github.com/Cassio7/nvmtree/blob/main/LICENSE">MIT license</a> &nbsp; <a href="https://github.com/Cassio7/nvmtree">GitHub</a> &nbsp; Product names and logos are trademarks of their owners</span>
+        <div class="socials"></div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-copy]'); if (!b) return;
+    const done = () => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy'; }, 1600); };
+    try { navigator.clipboard.writeText(b.dataset.copy).then(done, () => {}); } catch (_) {}
+  });
+</script>
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
+</body>
+</html>
